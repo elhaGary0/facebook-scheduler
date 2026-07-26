@@ -41,8 +41,6 @@
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
         .dark ::-webkit-scrollbar-thumb { background: #475569; }
         ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-        
-        /* Hide scrollbar for clean internal lists */
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     </style>
@@ -54,7 +52,7 @@
         const { useState, useEffect, useMemo, useCallback } = React;
 
         // ==========================================
-        // UTILS & DB (LocalStorage)
+        // UTILS & DB
         // ==========================================
         const generateId = () => Math.random().toString(36).substring(2, 15);
 
@@ -68,26 +66,13 @@
             }
         }
 
-        // ==========================================
-        // REAL FACEBOOK GRAPH API INTEGRATION
-        // ==========================================
+        // --- REAL FACEBOOK GRAPH API INTEGRATION ---
         const GraphAPI = {
             init(appId) {
-                return new Promise((resolve) => {
-                    if (window.FB) {
-                        window.FB.init({
-                            appId      : appId,
-                            cookie     : true,
-                            xfbml      : true,
-                            version    : 'v20.0' // Latest Graph API version
-                        });
-                        return resolve();
-                    }
-                    if (document.getElementById('facebook-jssdk')) {
-                        return resolve(); // Script already injected
-                    }
+                return new Promise((resolve, reject) => {
+                    if (window.FB) return resolve();
                     window.fbAsyncInit = function() {
-                        FB.init({
+                        window.FB.init({
                             appId      : appId,
                             cookie     : true,
                             xfbml      : true,
@@ -97,72 +82,87 @@
                     };
                     (function(d, s, id) {
                         var js, fjs = d.getElementsByTagName(s)[0];
-                        if (d.getElementById(id)) return;
+                        if (d.getElementById(id)) { resolve(); return; }
                         js = d.createElement(s); js.id = id;
                         js.src = "https://connect.facebook.net/en_US/sdk.js";
+                        js.onerror = () => reject(new Error("تم حظر الاتصال بفيسبوك. يرجى إيقاف مانع الإعلانات (AdBlock)."));
                         fjs.parentNode.insertBefore(js, fjs);
                     }(document, 'script', 'facebook-jssdk'));
                 });
             },
+            
+            login() {
+                return new Promise((resolve, reject) => {
+                    window.FB.login(function(response) {
+                        if (response.authResponse) {
+                            resolve(response.authResponse);
+                        } else {
+                            reject(new Error('تم إلغاء تسجيل الدخول أو لم تمنح الصلاحيات.'));
+                        }
+                    }, {scope: 'pages_manage_posts,pages_show_list,pages_read_engagement'});
+                });
+            },
 
             getUserInfo() {
-                return new Promise((resolve, reject) => {
-                    FB.api('/me', {fields: 'id,name,picture'}, function(response) {
-                        if (response.error) reject(response.error);
-                        else resolve(response);
-                    });
+                return new Promise((resolve) => {
+                    window.FB.api('/me', {fields: 'id,name,picture'}, function(response) { resolve(response); });
                 });
             },
 
             getPages() {
-                return new Promise((resolve, reject) => {
-                    // Fetch accounts with infinite pagination handled simply for now
-                    FB.api('/me/accounts', {fields: 'id,name,access_token,picture{url}', limit: 100}, function(response) {
-                        if (response.error) {
-                            reject(response.error);
-                        } else if (response && response.data) {
+                return new Promise((resolve) => {
+                    window.FB.api('/me/accounts', {fields: 'id,name,access_token,picture{url}'}, function(response) {
+                        if (response && response.data) {
                             resolve(response.data.map(p => ({
-                                id: p.id,
-                                name: p.name,
-                                accessToken: p.access_token,
+                                id: p.id, name: p.name, accessToken: p.access_token,
                                 picture: p.picture?.data?.url || 'https://via.placeholder.com/50'
                             })));
-                        } else {
-                            resolve([]);
-                        }
+                        } else { resolve([]); }
                     });
                 });
             },
 
             async schedulePost(page, post) {
                 return new Promise((resolve) => {
-                    // Facebook Graph API expects Unix Timestamp (Seconds) for scheduled posts
                     const unixTime = Math.floor(new Date(post.scheduledDate).getTime() / 1000);
                     
-                    const payload = {
-                        message: post.payload.text,
-                        published: false, // Essential for scheduling
-                        scheduled_publish_time: unixTime,
-                        access_token: page.accessToken
-                    };
+                    // إذا كان البوست يحتوي على صورة
+                    if (post.payload.mediaFile) {
+                        const formData = new FormData();
+                        formData.append('source', post.payload.mediaFile);
+                        formData.append('message', post.payload.text);
+                        formData.append('published', 'false'); // لجعله مجدولاً وغير منشور فوراً
+                        formData.append('scheduled_publish_time', unixTime);
+                        formData.append('access_token', page.accessToken);
 
-                    if (post.payload.link) {
-                        payload.link = post.payload.link;
+                        // استخدام Fetch API للتعامل مع رفع الملفات بشكل أفضل من FB.api
+                        fetch(`https://graph.facebook.com/v20.0/${page.id}/photos`, {
+                            method: 'POST',
+                            body: formData
+                        })
+                        .then(res => res.json())
+                        .then(response => {
+                            if (response.error) resolve({ error: response.error });
+                            // فيسبوك يرجع post_id للصور المجدولة
+                            else resolve({ id: response.post_id || response.id });
+                        })
+                        .catch(err => resolve({ error: { message: err.message || "فشل رفع الصورة" } }));
+                    } 
+                    // إذا كان البوست نص/رابط فقط
+                    else {
+                        const payload = {
+                            message: post.payload.text,
+                            published: false,
+                            scheduled_publish_time: unixTime,
+                            access_token: page.accessToken
+                        };
+                        if (post.payload.link) payload.link = post.payload.link;
+
+                        window.FB.api(`/${page.id}/feed`, 'POST', payload, function (response) {
+                            if (!response || response.error) resolve({ error: response.error });
+                            else resolve({ id: response.id });
+                        });
                     }
-
-                    // Execute the actual POST request
-                    FB.api(
-                        `/${page.id}/feed`,
-                        'POST',
-                        payload,
-                        function (response) {
-                            if (!response || response.error) {
-                                resolve({ error: response.error });
-                            } else {
-                                resolve({ id: response.id });
-                            }
-                        }
-                    );
                 });
             }
         };
@@ -178,11 +178,7 @@
                 failed: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-400',
                 cancelled: 'bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
             };
-            return (
-                <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${styles[status]}`}>
-                    {status}
-                </span>
-            );
+            return <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${styles[status]}`}>{status}</span>;
         }
 
         function ConfirmModal({ isOpen, title, message, onConfirm, onCancel }) {
@@ -193,8 +189,8 @@
                         <h3 className="text-xl font-bold mb-2 dark:text-white">{title}</h3>
                         <p className="text-gray-600 dark:text-gray-300 mb-6">{message}</p>
                         <div className="flex justify-end gap-3">
-                            <button onClick={onCancel} className="px-4 py-2 rounded-xl text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 font-medium transition-colors">إلغاء</button>
-                            <button onClick={onConfirm} className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium transition-colors">تأكيد</button>
+                            <button onClick={onCancel} className="px-4 py-2 rounded-xl text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 font-medium">Cancel</button>
+                            <button onClick={onConfirm} className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium">Confirm</button>
                         </div>
                     </div>
                 </div>
@@ -206,9 +202,8 @@
             const colors = type === 'error' ? 'bg-red-100 border-red-500 text-red-800' : 'bg-green-100 border-green-500 text-green-800';
             const icon = type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle';
             return (
-                <div className={`fixed bottom-6 right-6 flex items-center gap-3 px-4 py-3 rounded-xl border-l-4 shadow-lg z-50 ${colors} animate-fade-in`}>
-                    <i className={`fas ${icon} text-lg`}></i>
-                    <p className="font-medium text-sm sm:text-base max-w-xs break-words">{message}</p>
+                <div className={`fixed bottom-6 right-6 flex items-center gap-3 px-4 py-3 rounded-xl border-l-4 shadow-lg z-50 ${colors}`}>
+                    <i className={`fas ${icon} text-lg`}></i><p className="font-medium">{message}</p>
                     <button onClick={onClose} className="ml-4 opacity-70 hover:opacity-100"><i className="fas fa-times"></i></button>
                 </div>
             );
@@ -217,7 +212,6 @@
         // ==========================================
         // MAIN VIEWS
         // ==========================================
-        
         function Dashboard({ posts }) {
             const stats = useMemo(() => ({
                 total: posts.length,
@@ -228,46 +222,36 @@
             }), [posts]);
 
             const cards = [
-                { label: 'إجمالي المنشورات', value: stats.total, icon: 'fa-file-alt', color: 'text-blue-500', bg: 'bg-blue-100 dark:bg-blue-900/30' },
-                { label: 'مجدول بنجاح', value: stats.scheduled, icon: 'fa-check-circle', color: 'text-green-500', bg: 'bg-green-100 dark:bg-green-900/30' },
-                { label: 'قيد الانتظار', value: stats.pending, icon: 'fa-clock', color: 'text-yellow-500', bg: 'bg-yellow-100 dark:bg-yellow-900/30' },
-                { label: 'فشل النشر', value: stats.failed, icon: 'fa-times-circle', color: 'text-red-500', bg: 'bg-red-100 dark:bg-red-900/30' },
+                { label: 'Total Posts', value: stats.total, icon: 'fa-file-alt', color: 'text-blue-500', bg: 'bg-blue-100 dark:bg-blue-900/30' },
+                { label: 'Scheduled (API)', value: stats.scheduled, icon: 'fa-check-circle', color: 'text-green-500', bg: 'bg-green-100 dark:bg-green-900/30' },
+                { label: 'Pending Processor', value: stats.pending, icon: 'fa-clock', color: 'text-yellow-500', bg: 'bg-yellow-100 dark:bg-yellow-900/30' },
+                { label: 'Failed', value: stats.failed, icon: 'fa-times-circle', color: 'text-red-500', bg: 'bg-red-100 dark:bg-red-900/30' },
             ];
 
             return (
-                <div className="space-y-6 max-w-6xl mx-auto animate-fade-in" dir="rtl">
+                <div className="space-y-6 max-w-6xl mx-auto animate-fade-in">
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                         {cards.map((card, i) => (
-                            <div key={i} className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm flex items-center gap-4 transition-transform hover:-translate-y-1">
-                                <div className={`p-4 rounded-xl ${card.bg} ${card.color}`}>
-                                    <i className={`fas ${card.icon} text-2xl`}></i>
-                                </div>
-                                <div>
-                                    <p className="text-gray-500 dark:text-gray-400 text-sm font-medium">{card.label}</p>
-                                    <h4 className="text-2xl font-bold dark:text-white">{card.value}</h4>
-                                </div>
+                            <div key={i} className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm flex items-center gap-4">
+                                <div className={`p-4 rounded-xl ${card.bg} ${card.color}`}><i className={`fas ${card.icon} text-2xl`}></i></div>
+                                <div><p className="text-gray-500 dark:text-gray-400 text-sm font-medium">{card.label}</p><h4 className="text-2xl font-bold dark:text-white">{card.value}</h4></div>
                             </div>
                         ))}
                     </div>
 
                     <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm p-6">
-                        <h3 className="text-lg font-semibold mb-4 dark:text-white">أحدث المنشورات المجدولة</h3>
+                        <h3 className="text-lg font-semibold mb-4 dark:text-white">Recent Activity</h3>
                         <div className="space-y-3">
                             {posts.slice(0, 5).map(post => (
                                 <div key={post.id} className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-100 dark:border-gray-700">
                                     <div className="flex flex-col">
-                                        <span className="font-medium text-sm truncate max-w-[200px] sm:max-w-md dark:text-gray-200">
-                                            {post.payload.text || 'منشور وسائط'}
-                                        </span>
-                                        <span className="text-xs text-gray-500 mt-1">
-                                            <i className="far fa-calendar-alt ml-1"></i>
-                                            {new Date(post.scheduledDate).toLocaleString('ar-EG')}
-                                        </span>
+                                        <span className="font-medium text-sm truncate max-w-[200px] sm:max-w-md dark:text-gray-200">{post.payload.text || 'Media Post'}</span>
+                                        <span className="text-xs text-gray-500"><i className="far fa-calendar-alt mr-1"></i>{new Date(post.scheduledDate).toLocaleString()}</span>
                                     </div>
                                     <StatusBadge status={post.status} />
                                 </div>
                             ))}
-                            {posts.length === 0 && <p className="text-gray-500 text-sm text-center py-6 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl">لا توجد منشورات مجدولة حتى الآن.</p>}
+                            {posts.length === 0 && <p className="text-gray-500 text-sm text-center py-6">No posts scheduled yet.</p>}
                         </div>
                     </div>
                 </div>
@@ -276,255 +260,186 @@
 
         function Scheduler({ pages, settings, setPosts, addLog }) {
             const [selectedPage, setSelectedPage] = useState(settings.defaultPageId || pages[0]?.id || '');
-            const [payload, setPayload] = useState({ text: '', link: '' });
+            const [payload, setPayload] = useState({ text: '', link: '', mediaFile: null, mediaPreview: null });
             const [startDate, setStartDate] = useState('');
             const [endDate, setEndDate] = useState('');
-            const [times, setTimes] = useState(settings.defaultPostingTimes.length ? settings.defaultPostingTimes : ['09:00', '15:00']);
+            const [times, setTimes] = useState(settings.defaultPostingTimes.length ? settings.defaultPostingTimes : ['09:00']);
             
             const [generatedPreview, setGeneratedPreview] = useState([]);
             const [isProcessing, setIsProcessing] = useState(false);
             const [progress, setProgress] = useState({ current: 0, total: 0 });
             const [toastMsg, setToastMsg] = useState(null);
 
-            const showToast = (msg, type='error') => {
-                setToastMsg({ message: msg, type });
-                setTimeout(() => setToastMsg(null), 5000);
-            };
+            const showToast = (msg, type='error') => { setToastMsg({ message: msg, type }); setTimeout(() => setToastMsg(null), 4000); };
 
             const handleGenerate = () => {
-                if (!selectedPage || !payload.text || !startDate || !endDate || times.length === 0) {
-                    showToast("يرجى تعبئة الحقول المطلوبة (الصفحة، النص، التواريخ، الأوقات).", "error");
-                    return;
-                }
-
-                const start = new Date(startDate);
-                const end = new Date(endDate);
-                const now = new Date();
+                if (!selectedPage || (!payload.text && !payload.mediaFile) || !startDate || !endDate || times.length === 0) 
+                    return showToast("يرجى تعبئة الحقول المطلوبة (الصفحة، النص أو الصورة، والتاريخ).", "error");
                 
-                if (end < start) {
-                    showToast("تاريخ النهاية لا يمكن أن يكون قبل تاريخ البداية.", "error");
-                    return;
-                }
+                const start = new Date(startDate); const end = new Date(endDate);
+                if (end < start) return showToast("End date cannot be before start date.", "error");
 
-                const preview = [];
-                let curr = new Date(start);
-
+                const preview = []; let curr = new Date(start);
                 while (curr <= end) {
                     for (const timeStr of times) {
                         const [hours, minutes] = timeStr.split(':').map(Number);
-                        const schedDate = new Date(curr);
-                        schedDate.setHours(hours, minutes, 0, 0);
-
-                        // FB requires schedule time to be between 10 mins and 75 days from now
-                        const diffMins = (schedDate.getTime() - now.getTime()) / (1000 * 60);
-                        
-                        if (diffMins > 10 && diffMins < (75 * 24 * 60)) {
-                            preview.push({
-                                id: generateId(),
-                                pageId: selectedPage,
-                                payload: { ...payload },
-                                scheduledDate: schedDate.toISOString(),
-                                status: 'pending',
-                                createdAt: new Date().toISOString()
-                            });
+                        const schedDate = new Date(curr); schedDate.setHours(hours, minutes, 0, 0);
+                        if (schedDate.getTime() > new Date().getTime()) {
+                            preview.push({ id: generateId(), pageId: selectedPage, payload: { ...payload }, scheduledDate: schedDate.toISOString(), status: 'pending', createdAt: new Date().toISOString() });
                         }
                     }
                     curr.setDate(curr.getDate() + 1);
                 }
-
-                if (preview.length === 0) {
-                    showToast("لم يتم توليد أي تواريخ صحيحة (تأكد أن الأوقات تقع في المستقبل بمدة 10 دقائق على الأقل ولا تتجاوز 75 يوماً كما يشترط فيسبوك).", "error");
-                    return;
-                }
-
+                if (preview.length === 0) return showToast("No valid future dates generated.", "error");
                 setGeneratedPreview(preview);
-                addLog('info', 'تم إنشاء قائمة الجدولة', `تم تجهيز ${preview.length} منشور للمعاينة.`);
+                addLog('info', 'Schedule Generated', `Generated ${preview.length} datetimes.`);
             };
 
             const processQueue = async (queue) => {
-                setIsProcessing(true);
-                setProgress({ current: 0, total: queue.length });
-                
+                setIsProcessing(true); setProgress({ current: 0, total: queue.length });
                 const page = pages.find(p => p.id === selectedPage);
-                setPosts(prev => [...queue, ...prev]);
-                setGeneratedPreview([]); 
                 
-                let successCount = 0;
-                let failCount = 0;
+                // إضافة المجدولات للقائمة مع إزالة ملف الصورة لتجنب مشاكل التخزين المحلي (LocalStorage)
+                const queueForState = queue.map(q => ({
+                    ...q, 
+                    payload: { ...q.payload, mediaFile: null } // لا نخزن الملفات في الذاكرة المحلية
+                }));
+                setPosts(prev => [...queueForState, ...prev]); 
+                setGeneratedPreview([]); 
+                let successCount = 0; let failCount = 0;
 
                 for (let i = 0; i < queue.length; i++) {
-                    const currentPost = queue[i];
-                    setProgress(p => ({ ...p, current: i + 1 }));
-                    
+                    const currentPost = queue[i]; setProgress(p => ({ ...p, current: i + 1 }));
                     const response = await GraphAPI.schedulePost(page, currentPost);
-                    
                     setPosts(prev => prev.map(p => {
                         if (p.id === currentPost.id) {
                             if (response.error) {
-                                failCount++;
-                                addLog('error', 'خطأ في Graph API', `فشل المنشور ${p.id}: ${response.error.message}`);
+                                failCount++; addLog('error', 'Graph API Error', `Post ${p.id} failed: ${response.error.message}`);
                                 return { ...p, status: 'failed', errorMsg: response.error.message };
                             } else {
-                                successCount++;
-                                addLog('success', 'تم الجدولة بنجاح', `FB ID: ${response.id}`);
+                                successCount++; addLog('success', 'Post Scheduled', `FB ID: ${response.id}`);
                                 return { ...p, status: 'scheduled', fbPostId: response.id };
                             }
                         }
                         return p;
                     }));
                 }
-                
                 setIsProcessing(false);
-                addLog('info', 'اكتملت العملية المجمعة', `تم معالجة ${queue.length}. نجح: ${successCount}, فشل: ${failCount}.`);
-                showToast(`تمت الجدولة! نجح ${successCount}، وفشل ${failCount}.`, failCount > 0 ? 'error' : 'success');
+                addLog('info', 'Bulk Complete', `Processed ${queue.length}. Success: ${successCount}, Failed: ${failCount}.`);
+                showToast(`Scheduling complete! ${successCount} succeeded, ${failCount} failed.`, failCount > 0 ? 'error' : 'success');
             };
 
-            const addTime = () => {
-                const val = document.getElementById('newTime').value;
-                if(val && !times.includes(val)) setTimes([...times, val].sort());
+            const handleImageUpload = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    setPayload({
+                        ...payload,
+                        mediaFile: file,
+                        mediaPreview: URL.createObjectURL(file)
+                    });
+                }
+            };
+
+            const removeImage = () => {
+                setPayload({ ...payload, mediaFile: null, mediaPreview: null });
             };
 
             return (
-                <div className="max-w-6xl mx-auto flex flex-col xl:flex-row gap-6 animate-fade-in" dir="rtl">
+                <div className="max-w-6xl mx-auto flex flex-col xl:flex-row gap-6 animate-fade-in">
                     {toastMsg && <Toast message={toastMsg.message} type={toastMsg.type} onClose={() => setToastMsg(null)} />}
-                    
-                    {/* Left Form */}
                     <div className="flex-1 space-y-6">
-                        <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm">
-                            <h3 className="text-lg font-bold mb-4 dark:text-white flex items-center gap-2">
-                                <i className="fab fa-facebook text-fb"></i> 1. اختر الصفحة
-                            </h3>
-                            <select 
-                                value={selectedPage} 
-                                onChange={e => setSelectedPage(e.target.value)}
-                                className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb transition-all"
-                            >
-                                <option value="">اختر صفحة فيسبوك...</option>
+                        <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700">
+                            <h3 className="text-lg font-bold mb-4 dark:text-white"><i className="fab fa-facebook text-fb mr-2"></i> 1. Select Target Page</h3>
+                            <select value={selectedPage} onChange={e => setSelectedPage(e.target.value)} className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none">
+                                <option value="">Select a Facebook Page...</option>
                                 {pages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                             </select>
                         </div>
-
-                        <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm space-y-5">
-                            <h3 className="text-lg font-bold dark:text-white flex items-center gap-2">
-                                <i className="fas fa-edit text-blue-500"></i> 2. محتوى المنشور
-                            </h3>
+                        <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 space-y-5">
+                            <h3 className="text-lg font-bold dark:text-white"><i className="fas fa-edit text-blue-500 mr-2"></i> 2. Content Setup</h3>
+                            <div>
+                                <label className="block text-sm font-semibold mb-2 dark:text-gray-300">Caption / Text</label>
+                                <textarea rows="4" className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none resize-none" value={payload.text} onChange={e => setPayload({...payload, text: e.target.value})} placeholder="اكتب محتوى المنشور هنا..." />
+                            </div>
                             
+                            {/* منطقة رفع الصورة */}
                             <div>
-                                <label className="block text-sm font-semibold mb-2 dark:text-gray-300">النص / الكابشن (مطلوب)</label>
-                                <textarea 
-                                    rows="4" 
-                                    className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb transition-all resize-none"
-                                    placeholder="بم تفكر؟ هذا النص سيتم استخدامه في جميع المنشورات المجدولة."
-                                    value={payload.text}
-                                    onChange={e => setPayload({...payload, text: e.target.value})}
-                                />
-                            </div>
-
-                            <div>
-                                <label className="block text-sm font-semibold mb-2 dark:text-gray-300">رابط (اختياري)</label>
-                                <div className="relative">
-                                    <i className="fas fa-link absolute right-4 top-3.5 text-gray-400"></i>
-                                    <input 
-                                        type="url" 
-                                        className="w-full pr-10 pl-4 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl py-3 outline-none focus:border-fb text-left"
-                                        placeholder="https://..." dir="ltr"
-                                        value={payload.link}
-                                        onChange={e => setPayload({...payload, link: e.target.value})}
-                                    />
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm space-y-5">
-                            <h3 className="text-lg font-bold dark:text-white flex items-center gap-2">
-                                <i className="fas fa-clock text-green-500"></i> 3. إعدادات التواريخ والأوقات
-                            </h3>
-                            
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-sm font-semibold mb-2 dark:text-gray-300">تاريخ البداية *</label>
-                                    <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="w-full bg-gray-50 dark:bg-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb" />
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-semibold mb-2 dark:text-gray-300">تاريخ النهاية *</label>
-                                    <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="w-full bg-gray-50 dark:bg-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb" />
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="block text-sm font-semibold mb-3 dark:text-gray-300">أوقات النشر اليومية *</label>
-                                <div className="flex flex-wrap gap-3">
-                                    {times.map((t, idx) => (
-                                        <div key={idx} className="bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 px-4 py-2 rounded-xl flex items-center gap-3 text-sm font-bold border border-blue-100 dark:border-blue-800">
-                                            <i className="far fa-clock"></i> <span dir="ltr">{t}</span>
-                                            <button onClick={() => setTimes(times.filter((_, i) => i !== idx))} className="hover:text-red-500 transition-colors mr-2"><i className="fas fa-times-circle"></i></button>
+                                <label className="block text-sm font-semibold mb-2 dark:text-gray-300">Image Upload (Optional)</label>
+                                {!payload.mediaPreview ? (
+                                    <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-xl cursor-pointer bg-gray-50 dark:hover:bg-gray-800 dark:bg-gray-900 hover:bg-gray-100 dark:border-gray-600 dark:hover:border-gray-500">
+                                        <div className="flex flex-col items-center justify-center pt-5 pb-6 text-gray-500 dark:text-gray-400">
+                                            <i className="fas fa-cloud-upload-alt text-2xl mb-2"></i>
+                                            <p className="text-sm font-semibold">اضغط لرفع صورة</p>
                                         </div>
-                                    ))}
-                                    <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-900 rounded-xl border border-gray-300 dark:border-gray-600 p-1">
-                                        <input type="time" id="newTime" className="bg-transparent px-2 outline-none text-sm font-bold dark:text-white" />
-                                        <button onClick={addTime} className="p-2 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200"><i className="fas fa-plus"></i></button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <button onClick={handleGenerate} className="w-full mt-6 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 font-bold py-4 rounded-xl hover:bg-gray-800 dark:hover:bg-gray-200 transition-transform active:scale-[0.99] shadow-md">
-                                إنشاء قائمة المواعيد (معاينة)
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* Right Preview */}
-                    <div className="flex-1 lg:max-w-md xl:max-w-lg flex flex-col">
-                        <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm flex-1 flex flex-col overflow-hidden sticky top-20 max-h-[calc(100vh-100px)]">
-                            <div className="p-6 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-900/50">
-                                <h3 className="text-lg font-bold dark:text-white"><i className="fas fa-list-ul text-gray-400 ml-2"></i> معاينة الطابور</h3>
-                                <span className="bg-fb text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-sm">
-                                    {generatedPreview.length} منشور
-                                </span>
-                            </div>
-                            
-                            <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                                {generatedPreview.length === 0 ? (
-                                    <div className="h-full flex flex-col items-center justify-center text-gray-400 space-y-4">
-                                        <i className="far fa-calendar-times text-5xl opacity-20"></i>
-                                        <p className="font-medium">حدد التواريخ والوقت واضغط إنشاء.</p>
-                                    </div>
+                                        <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
+                                    </label>
                                 ) : (
-                                    generatedPreview.map((item, idx) => (
-                                        <div key={item.id} className="flex items-center justify-between p-4 rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30">
-                                            <div className="flex items-center gap-4">
-                                                <span className="text-gray-400 font-mono font-bold w-6 text-left">{idx + 1}.</span>
-                                                <div>
-                                                    <p className="font-bold dark:text-gray-200">{new Date(item.scheduledDate).toLocaleDateString('ar-EG')}</p>
-                                                    <p className="text-xs text-gray-500 font-mono mt-1"><i className="far fa-clock ml-1"></i>{new Date(item.scheduledDate).toLocaleTimeString('ar-EG', {hour: '2-digit', minute:'2-digit'})}</p>
-                                                </div>
-                                            </div>
-                                            <button onClick={() => setGeneratedPreview(prev => prev.filter(p => p.id !== item.id))} className="text-gray-400 hover:text-red-500 p-2 transition-colors">
-                                                <i className="fas fa-trash-alt"></i>
-                                            </button>
-                                        </div>
-                                    ))
+                                    <div className="relative w-full h-48 rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700">
+                                        <img src={payload.mediaPreview} alt="Preview" className="w-full h-full object-cover" />
+                                        <button onClick={removeImage} className="absolute top-2 right-2 bg-red-500 text-white p-2 rounded-lg hover:bg-red-600 shadow-lg">
+                                            <i className="fas fa-trash-alt"></i>
+                                        </button>
+                                    </div>
                                 )}
                             </div>
 
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-semibold mb-2 dark:text-gray-300">Link URL (Optional)</label>
+                                    <input type="url" className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none" value={payload.link} onChange={e => setPayload({...payload, link: e.target.value})} />
+                                </div>
+                            </div>
+                        </div>
+                        <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 space-y-5">
+                            <h3 className="text-lg font-bold dark:text-white"><i className="fas fa-clock text-green-500 mr-2"></i> 3. Bulk Schedule Timing</h3>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div><label className="block text-sm font-semibold mb-2 dark:text-gray-300">Start Date *</label><input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="w-full bg-gray-50 dark:bg-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none" /></div>
+                                <div><label className="block text-sm font-semibold mb-2 dark:text-gray-300">End Date *</label><input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="w-full bg-gray-50 dark:bg-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none" /></div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-semibold mb-3 dark:text-gray-300">Posting Times (Daily) *</label>
+                                <div className="flex flex-wrap gap-3">
+                                    {times.map((t, idx) => (
+                                        <div key={idx} className="bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 px-4 py-2 rounded-xl flex items-center gap-3 font-bold border border-blue-100 dark:border-blue-800">
+                                            {t} <button onClick={() => setTimes(times.filter((_, i) => i !== idx))} className="hover:text-red-500"><i className="fas fa-times-circle"></i></button>
+                                        </div>
+                                    ))}
+                                    <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-900 rounded-xl border border-gray-300 dark:border-gray-600 p-1">
+                                        <input type="time" id="newTime" className="bg-transparent px-2 outline-none dark:text-white" />
+                                        <button onClick={() => {const v = document.getElementById('newTime').value; if(v && !times.includes(v)) setTimes([...times, v].sort());}} className="p-2 bg-gray-200 dark:bg-gray-700 rounded-lg"><i className="fas fa-plus"></i></button>
+                                    </div>
+                                </div>
+                            </div>
+                            <button onClick={handleGenerate} className="w-full bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 font-bold py-4 rounded-xl">Generate Preview</button>
+                        </div>
+                    </div>
+
+                    <div className="flex-1 lg:max-w-md xl:max-w-lg flex flex-col">
+                        <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm flex-1 flex flex-col overflow-hidden sticky top-20 max-h-[calc(100vh-100px)]">
+                            <div className="p-6 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-900/50">
+                                <h3 className="font-bold dark:text-white">Queue Preview</h3>
+                                <span className="bg-fb text-white text-xs font-bold px-3 py-1.5 rounded-full">{generatedPreview.length} items</span>
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                                {generatedPreview.map((item, idx) => (
+                                    <div key={item.id} className="flex items-center justify-between p-4 rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30">
+                                        <div className="flex items-center gap-4">
+                                            <span className="text-gray-400 font-mono font-bold w-6">{idx + 1}.</span>
+                                            <div><p className="font-bold dark:text-gray-200">{new Date(item.scheduledDate).toLocaleDateString()}</p><p className="text-xs text-gray-500 font-mono mt-1">{new Date(item.scheduledDate).toLocaleTimeString()}</p></div>
+                                        </div>
+                                        <button onClick={() => setGeneratedPreview(prev => prev.filter(p => p.id !== item.id))} className="text-gray-400 hover:text-red-500"><i className="fas fa-trash-alt"></i></button>
+                                    </div>
+                                ))}
+                            </div>
                             {generatedPreview.length > 0 && (
-                                <div className="p-5 border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-[0_-10px_30px_rgba(0,0,0,0.05)] z-10">
+                                <div className="p-5 border-t border-gray-100 dark:border-gray-700">
                                     {isProcessing ? (
                                         <div className="space-y-3">
-                                            <div className="flex justify-between text-sm font-bold dark:text-gray-300">
-                                                <span><i className="fas fa-spinner fa-spin ml-2"></i> جاري الاتصال بخوادم ميتا...</span>
-                                                <span dir="ltr">{progress.current} / {progress.total}</span>
-                                            </div>
-                                            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3 overflow-hidden">
-                                                <div className="bg-fb h-3 rounded-full transition-all duration-300 relative" style={{ width: `${(progress.current / progress.total) * 100}%` }}>
-                                                    <div className="absolute inset-0 bg-white/20 animate-pulse"></div>
-                                                </div>
-                                            </div>
+                                            <div className="flex justify-between text-sm font-bold dark:text-gray-300"><span>Processing...</span><span>{progress.current} / {progress.total}</span></div>
+                                            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3"><div className="bg-fb h-3 rounded-full transition-all" style={{ width: `${(progress.current / progress.total) * 100}%` }}></div></div>
                                         </div>
                                     ) : (
-                                        <button onClick={() => processQueue(generatedPreview)} className="w-full bg-fb hover:bg-fb-hover text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-blue-500/30 flex items-center justify-center gap-2 text-lg active:scale-[0.98]">
-                                            <i className="fas fa-paper-plane"></i> جدولة الكل فعلياً (Graph API)
-                                        </button>
+                                        <button onClick={() => processQueue(generatedPreview)} className="w-full bg-fb text-white font-bold py-4 rounded-xl">Schedule All via API</button>
                                     )}
                                 </div>
                             )}
@@ -534,253 +449,117 @@
             );
         }
 
-        // ==========================================
-        // LOGIN SCREEN (Fixed Async SDK Issue)
-        // ==========================================
-        function LoginScreen({ onLogin, theme, toggleTheme }) {
-            const [loading, setLoading] = useState(false);
-            // وضعت لك رقم تطبيقك بشكل افتراضي هنا:
-            const [appId, setAppId] = useState(() => DB.get('fb_app_id', '1209280678019831'));
-            const [error, setError] = useState('');
-            
-            // تحميل SDK فيسبوك بمجرد كتابة رقم التطبيق لتجهيزه قبل أن يضغط المستخدم
-            useEffect(() => {
-                if (appId && appId.trim().length > 10) {
-                    GraphAPI.init(appId.trim()).catch(e => console.log('SDK Load Error:', e));
-                }
-            }, [appId]);
-
-            const handleLogin = () => {
-                if (!appId.trim()) {
-                    return setError('يرجى إدخال Facebook App ID الخاص بك.');
-                }
-                
-                setLoading(true);
-                setError('');
-                DB.set('fb_app_id', appId.trim());
-
-                // دالة الاتصال المباشرة (يجب أن تنفذ بشكل متزامن مع زر الضغط لتجنب حظر النافذة)
-                const executeLogin = () => {
-                    FB.login(async function(response) {
-                        if (response.authResponse) {
-                            try {
-                                const userInfo = await GraphAPI.getUserInfo();
-                                const userPages = await GraphAPI.getPages();
-                                onLogin({
-                                    user: { id: userInfo.id, name: userInfo.name, picture: userInfo.picture?.data?.url || 'https://via.placeholder.com/150' },
-                                    pages: userPages
-                                });
-                            } catch (e) {
-                                setError('فشل جلب بيانات الصفحات: ' + (e.message || 'خطأ غير معروف'));
-                                setLoading(false);
-                            }
-                        } else {
-                            setError('تم إلغاء تسجيل الدخول أو إغلاق النافذة، أو أن المتصفح قام بحظر النافذة المنبثقة.');
-                            setLoading(false);
-                        }
-                    }, {scope: 'pages_manage_posts,pages_show_list,pages_read_engagement'});
-                };
-
-                // إذا كان SDK محملاً، افتح النافذة فوراً. إذا لم يكن، حاول تهيئته ثم الفتح.
-                if (window.FB) {
-                    executeLogin();
-                } else {
-                    GraphAPI.init(appId.trim()).then(() => {
-                        executeLogin();
-                    }).catch(err => {
-                        setError('لا يمكن الاتصال بفيسبوك. تأكد من إيقاف أدوات حظر الإعلانات (Ad-blockers).');
-                        setLoading(false);
-                    });
-                }
-            };
+        function PostList({ posts, setPosts, pages, addLog }) {
+            const [searchTerm, setSearchTerm] = useState('');
+            const filteredPosts = posts.filter(p => p.payload.text.toLowerCase().includes(searchTerm.toLowerCase())).sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime());
 
             return (
-                <div className={`min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 transition-colors duration-200 ${theme}`} dir="rtl">
-                    <button onClick={toggleTheme} className="absolute top-6 left-6 w-12 h-12 flex items-center justify-center rounded-full bg-white dark:bg-gray-800 shadow-md border border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
-                        <i className={`fas ${theme === 'dark' ? 'fa-sun text-yellow-400' : 'fa-moon text-gray-600'} text-xl`}></i>
-                    </button>
-
-                    <div className="max-w-md w-full p-10 bg-white dark:bg-gray-800 rounded-3xl shadow-2xl shadow-blue-500/10 border border-gray-100 dark:border-gray-700 text-center relative overflow-hidden">
-                        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-fb to-blue-400"></div>
-                        
-                        <div className="w-20 h-20 bg-gradient-to-tr from-fb to-blue-500 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-blue-500/40">
-                            <i className="fab fa-facebook-f text-4xl text-white"></i>
-                        </div>
-                        
-                        <h1 className="text-3xl font-extrabold text-gray-900 dark:text-white mb-2">الجدولة المجمعة</h1>
-                        <p className="text-gray-500 dark:text-gray-400 mb-6 text-sm leading-relaxed">تطبيق متصل رسمياً بـ Meta Graph API</p>
-                        
-                        <div className="mb-6 text-right">
-                            <label className="block text-sm font-bold mb-2 dark:text-gray-300">Facebook App ID</label>
-                            <input 
-                                type="text" 
-                                value={appId}
-                                onChange={(e) => setAppId(e.target.value)}
-                                placeholder="مثال: 1209280678019831"
-                                className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb text-left"
-                                dir="ltr"
-                            />
-                            {error && <p className="text-red-500 text-xs mt-3 font-medium bg-red-50 p-2 rounded-lg border border-red-100"><i className="fas fa-exclamation-circle ml-1"></i> {error}</p>}
-                        </div>
-
-                        <button 
-                            onClick={handleLogin} disabled={loading}
-                            className="w-full flex items-center justify-center gap-3 bg-fb hover:bg-fb-hover text-white py-4 px-6 rounded-xl font-bold text-lg transition-transform hover:scale-[1.02] active:scale-95 shadow-xl shadow-blue-500/30 disabled:opacity-70 disabled:hover:scale-100"
-                        >
-                            {loading ? <i className="fas fa-spinner fa-spin"></i> : <i className="fab fa-facebook"></i>}
-                            {loading ? 'جاري فتح نافذة فيسبوك...' : 'تسجيل الدخول باستخدام فيسبوك'}
-                        </button>
-                        
-                        <div className="mt-8 pt-6 border-t border-gray-100 dark:border-gray-700">
-                            <p className="text-xs text-gray-400 dark:text-gray-500 font-medium leading-loose">
-                                <i className="fas fa-lock ml-1"></i> نطلب فقط صلاحية النشر عبر صفحاتك.<br/>
-                                <i className="fas fa-info-circle ml-1"></i> تأكد من تفعيل "النوافذ المنبثقة" في المتصفح.
-                            </p>
-                        </div>
+                <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col h-full animate-fade-in">
+                    <div className="p-5 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-900/20">
+                        <input type="text" placeholder="Search..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="px-4 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl outline-none dark:text-white" />
+                    </div>
+                    <div className="flex-1 overflow-auto">
+                        <table className="w-full text-left text-sm whitespace-nowrap">
+                            <thead className="bg-gray-100 dark:bg-gray-900/80 text-gray-600 dark:text-gray-400 sticky top-0">
+                                <tr><th className="p-4 font-bold">Content</th><th className="p-4 font-bold">Page</th><th className="p-4 font-bold">Scheduled Time</th><th className="p-4 font-bold">Status</th></tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100 dark:divide-gray-700/50">
+                                {filteredPosts.map(post => (
+                                    <tr key={post.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/80">
+                                        <td className="p-4"><div className="max-w-xs truncate dark:text-gray-200">{post.payload.text || '(Media)'}</div>{post.errorMsg && <div className="text-xs text-red-500 truncate max-w-xs mt-1">{post.errorMsg}</div>}</td>
+                                        <td className="p-4 text-gray-500 dark:text-gray-400">{pages.find(p => p.id === post.pageId)?.name || 'Unknown'}</td>
+                                        <td className="p-4 font-mono text-xs dark:text-gray-300">{new Date(post.scheduledDate).toLocaleString()}</td>
+                                        <td className="p-4"><StatusBadge status={post.status} /></td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             );
         }
 
-        // ==========================================
-        // MAIN APP SHELL (Sidebar & Routing)
-        // ==========================================
-        function Sidebar({ view, setView, user, onLogout }) {
-            const nav = [
-                { id: 'dashboard', icon: 'fa-chart-pie', label: 'لوحة القيادة' },
-                { id: 'scheduler', icon: 'fa-plus-square', label: 'جدولة جديدة' },
-                { id: 'settings', icon: 'fa-cog', label: 'الإعدادات' },
-            ];
+        function LoginScreen({ onLogin, theme, toggleTheme }) {
+            const [loading, setLoading] = useState(false);
+            const [appId, setAppId] = useState(() => DB.get('fb_app_id', ''));
+            const [error, setError] = useState('');
+            
+            useEffect(() => { if (appId.trim()) GraphAPI.init(appId.trim()).catch(e => setError(e.message)); }, [appId]);
+
+            const handleLogin = () => {
+                if (!appId.trim()) return setError('يرجى إدخال Facebook App ID الخاص بك.');
+                if (!window.FB) return setError('جاري تجهيز الاتصال، تأكد من إدخال App ID صحيح وأنك ألغيت مانع الإعلانات.');
+                setLoading(true); setError(''); DB.set('fb_app_id', appId.trim());
+
+                GraphAPI.login().then(async (authResponse) => {
+                    try {
+                        const userInfo = await GraphAPI.getUserInfo();
+                        const userPages = await GraphAPI.getPages();
+                        onLogin({ user: { id: userInfo.id, name: userInfo.name, picture: userInfo.picture?.data?.url }, pages: userPages });
+                    } catch (err) { setError('حدث خطأ أثناء جلب الصفحات.'); setLoading(false); }
+                }).catch(err => { setError(err.message); setLoading(false); });
+            };
 
             return (
-                <aside className="w-64 bg-white dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 flex flex-col transition-colors z-20 hidden md:flex shadow-[4px_0_24px_rgba(0,0,0,0.02)]" dir="rtl">
-                    <div className="p-6 flex items-center gap-3">
-                        <div className="bg-gradient-to-br from-fb to-blue-600 w-10 h-10 rounded-xl flex items-center justify-center shadow-md shadow-blue-500/30 shrink-0"><i className="fab fa-facebook-f text-white text-lg"></i></div>
-                        <span className="font-extrabold text-xl tracking-tight dark:text-white truncate">FB Scheduler</span>
-                    </div>
-
-                    <nav className="flex-1 px-4 py-2 space-y-1.5 overflow-y-auto">
-                        {nav.map(item => {
-                            const active = view === item.id;
-                            return (
-                                <button
-                                    key={item.id}
-                                    onClick={() => setView(item.id)}
-                                    className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl transition-all font-bold text-sm ${
-                                        active 
-                                            ? 'bg-blue-50 dark:bg-fb text-fb dark:text-white shadow-sm' 
-                                            : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50'
-                                    }`}
-                                >
-                                    <i className={`fas ${item.icon} w-5 text-center ${active ? '' : 'opacity-70'}`}></i>
-                                    {item.label}
-                                </button>
-                            )
-                        })}
-                    </nav>
-
-                    <div className="p-4 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/20">
-                        <div className="flex items-center gap-3 p-2 bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 shadow-sm">
-                            <img src={user.picture} alt="User" className="w-10 h-10 rounded-lg bg-gray-200 shrink-0" />
-                            <div className="flex-1 min-w-0">
-                                <p className="text-sm font-bold truncate dark:text-white">{user.name}</p>
-                            </div>
-                            <button onClick={onLogout} className="text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors w-8 h-8 rounded-lg flex items-center justify-center shrink-0" title="تسجيل الخروج">
-                                <i className="fas fa-sign-out-alt"></i>
-                            </button>
+                <div className={`min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 transition-colors ${theme}`}>
+                    <div className="max-w-md w-full p-10 bg-white dark:bg-gray-800 rounded-3xl shadow-2xl border border-gray-100 dark:border-gray-700 text-center">
+                        <div className="w-20 h-20 bg-gradient-to-tr from-fb to-blue-500 rounded-2xl flex items-center justify-center mx-auto mb-6"><i className="fab fa-facebook-f text-4xl text-white"></i></div>
+                        <h1 className="text-2xl font-extrabold text-gray-900 dark:text-white mb-2">Facebook Scheduler</h1>
+                        
+                        <div className="mb-6 mt-6 text-left">
+                            <label className="block text-sm font-bold mb-2 dark:text-gray-300">Facebook App ID</label>
+                            <input type="text" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="مثال: 123456789012345" className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb" />
+                            {error && <p className="text-red-500 text-xs mt-2 font-medium">{error}</p>}
                         </div>
+
+                        <button onClick={handleLogin} disabled={loading} className="w-full flex items-center justify-center gap-3 bg-fb hover:bg-fb-hover text-white py-4 px-6 rounded-xl font-bold shadow-xl">
+                            {loading ? <i className="fas fa-spinner fa-spin"></i> : <i className="fab fa-facebook"></i>}
+                            {loading ? 'جاري الاتصال...' : 'تسجيل الدخول'}
+                        </button>
                     </div>
+                </div>
+            );
+        }
+
+        function Sidebar({ view, setView, user, onLogout }) {
+            const nav = [{ id: 'dashboard', icon: 'fa-chart-pie', label: 'Dashboard' }, { id: 'scheduler', icon: 'fa-plus-square', label: 'New Schedule' }, { id: 'posts', icon: 'fa-tasks', label: 'Queue Manager' }];
+            return (
+                <aside className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col hidden md:flex">
+                    <div className="p-6 flex items-center gap-3"><div className="bg-fb w-8 h-8 rounded flex items-center justify-center"><i className="fab fa-facebook-f text-white"></i></div><span className="font-bold text-lg dark:text-white">BulkSched</span></div>
+                    <nav className="flex-1 px-4 py-2 space-y-1">{nav.map(i => <button key={i.id} onClick={() => setView(i.id)} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm ${view === i.id ? 'bg-blue-50 dark:bg-fb text-fb dark:text-white' : 'text-gray-600 dark:text-gray-400'}`}><i className={`fas ${i.icon}`}></i> {i.label}</button>)}</nav>
+                    <div className="p-4 border-t border-gray-100 dark:border-gray-700"><div className="flex items-center gap-3 p-2 bg-gray-50 dark:bg-gray-900 rounded-xl"><img src={user.picture} className="w-8 h-8 rounded-lg" /><div className="flex-1"><p className="text-xs font-bold dark:text-white">{user.name}</p></div><button onClick={onLogout} className="text-red-500"><i className="fas fa-sign-out-alt"></i></button></div></div>
                 </aside>
             );
         }
 
         function App() {
-            const [theme, setTheme] = useState(() => DB.get('theme', 'light'));
-            const [user, setUser] = useState(() => DB.get('user', null));
+            const [theme, setTheme] = useState('light');
+            const [user, setUser] = useState(null);
             const [view, setView] = useState('dashboard');
-            
-            const [pages, setPages] = useState(() => DB.get('pages', []));
+            const [pages, setPages] = useState([]);
             const [posts, setPosts] = useState(() => DB.get('posts', []));
-            const [logs, setLogs] = useState(() => DB.get('logs', []));
-            const [settings, setSettings] = useState(() => DB.get('settings', {
-                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                defaultPostingTimes: ['09:00', '15:00', '21:00'],
-            }));
+            const [logs, setLogs] = useState([]);
+            const settings = { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, defaultPostingTimes: ['09:00', '15:00', '21:00'] };
 
-            // Sync States
-            useEffect(() => { DB.set('theme', theme); }, [theme]);
-            useEffect(() => { DB.set('user', user); }, [user]);
-            useEffect(() => { DB.set('pages', pages); }, [pages]);
             useEffect(() => { DB.set('posts', posts); }, [posts]);
-            useEffect(() => { DB.set('logs', logs); }, [logs]);
-            useEffect(() => { DB.set('settings', settings); }, [settings]);
+            useEffect(() => { if (theme === 'dark') document.documentElement.classList.add('dark'); else document.documentElement.classList.remove('dark'); }, [theme]);
 
-            useEffect(() => {
-                const root = document.documentElement;
-                if (theme === 'dark') root.classList.add('dark');
-                else root.classList.remove('dark');
-            }, [theme]);
+            const addLog = useCallback((level, action, details) => { console.log(`[${level}] ${action}: ${details}`); }, []);
 
-            const addLog = useCallback((level, action, details) => {
-                setLogs(prev => [{ id: generateId(), timestamp: new Date().toISOString(), level, action, details }, ...prev].slice(0, 100));
-            }, []);
+            const login = (authData) => { setUser(authData.user); setPages(authData.pages); };
+            const logout = () => { setUser(null); setPages([]); if (window.FB) window.FB.logout(); };
 
-            const login = (authData) => {
-                setUser(authData.user);
-                setPages(authData.pages);
-                addLog('success', 'تسجيل دخول ناجح', `تم ربط حساب: ${authData.user.name}`);
-            };
-
-            const logout = () => {
-                setUser(null);
-                setPages([]);
-                if (window.FB) window.FB.logout();
-                addLog('info', 'تسجيل خروج', 'تم إنهاء الجلسة.');
-            };
-
-            if (!user) {
-                return <LoginScreen onLogin={login} theme={theme} toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />;
-            }
-
-            const viewTitles = { dashboard: 'نظرة عامة', scheduler: 'الجدولة التلقائية', settings: 'الإعدادات' };
+            if (!user) return <LoginScreen onLogin={login} theme={theme} toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />;
 
             return (
-                <div className={`min-h-screen flex transition-colors duration-200 ${theme}`} dir="rtl">
+                <div className={`min-h-screen flex transition-colors duration-200 ${theme}`}>
                     <Sidebar view={view} setView={setView} user={user} onLogout={logout} />
-                    
                     <main className="flex-1 flex flex-col h-screen overflow-hidden bg-gray-50 dark:bg-gray-900 relative">
-                        <header className="h-20 bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-b border-gray-200 dark:border-gray-800 flex items-center justify-between px-8 sticky top-0 z-30">
-                            <div className="flex items-center gap-4">
-                                <button className="md:hidden text-gray-500 hover:text-gray-900 dark:hover:text-white"><i className="fas fa-bars text-xl"></i></button>
-                                <h2 className="text-2xl font-extrabold tracking-tight dark:text-white">{viewTitles[view]}</h2>
-                            </div>
-                            <button 
-                                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-                                className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors shadow-sm border border-gray-200 dark:border-gray-700"
-                            >
-                                <i className={`fas ${theme === 'dark' ? 'fa-sun text-yellow-400' : 'fa-moon text-gray-600'}`}></i>
-                            </button>
-                        </header>
-                        
+                        <header className="h-20 bg-white/80 dark:bg-gray-900/80 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between px-8"><h2 className="text-2xl font-extrabold dark:text-white capitalize">{view}</h2></header>
                         <div className="flex-1 overflow-y-auto p-6 md:p-8">
-                            <style>{`
-                                @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-                                .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
-                            `}</style>
-                            
                             {view === 'dashboard' && <Dashboard posts={posts} />}
                             {view === 'scheduler' && <Scheduler pages={pages} settings={settings} setPosts={setPosts} addLog={addLog} />}
-                            {view === 'settings' && (
-                                <div className="max-w-2xl mx-auto bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 animate-fade-in">
-                                    <h2 className="text-xl font-bold mb-6 dark:text-white border-b border-gray-100 dark:border-gray-700 pb-4">إعدادات الحساب</h2>
-                                    <div className="space-y-4">
-                                        <p className="dark:text-gray-300 text-sm">تم ربط التطبيق بنجاح مع صفحاتك.</p>
-                                        <p className="dark:text-gray-300 text-sm">المنطقة الزمنية الحالية: {settings.timezone}</p>
-                                        <p className="dark:text-gray-300 text-sm">عدد الصفحات المتاحة للإدارة: <strong>{pages.length}</strong> صفحة.</p>
-                                        <button onClick={logout} className="mt-4 px-6 py-2 bg-red-50 text-red-600 hover:bg-red-500 hover:text-white rounded-xl transition-colors font-bold">إلغاء ربط فيسبوك</button>
-                                    </div>
-                                </div>
-                            )}
+                            {view === 'posts' && <PostList posts={posts} setPosts={setPosts} pages={pages} addLog={addLog} />}
                         </div>
                     </main>
                 </div>
