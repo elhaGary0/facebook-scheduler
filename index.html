@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Facebook Bulk Scheduler</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
+                    },
+                    colors: {
+                        fb: '#1877F2',
+                        'fb-hover': '#166FE5'
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- React & ReactDOM (Production) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel standalone for JSX compilation in browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        /* Hide scrollbar for clean internal lists */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-900 transition-colors duration-200 antialiased">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback } = React;
+
+        // ==========================================
+        // UTILS & MOCK DB
+        // ==========================================
+        const generateId = () => Math.random().toString(36).substring(2, 15);
+
+        class DB {
+            static get(key, defaultValue) {
+                const stored = localStorage.getItem(`fbsched_${key}`);
+                return stored ? JSON.parse(stored) : defaultValue;
+            }
+            static set(key, value) {
+                localStorage.setItem(`fbsched_${key}`, JSON.stringify(value));
+            }
+        }
+
+        // --- REAL FACEBOOK GRAPH API INTEGRATION ---
+        const GraphAPI = {
+            init(appId) {
+                return new Promise((resolve) => {
+                    if (window.FB) return resolve();
+                    window.fbAsyncInit = function() {
+                        FB.init({
+                            appId      : appId,
+                            cookie     : true,
+                            xfbml      : true,
+                            version    : 'v19.0' // Using latest Graph API version
+                        });
+                        resolve();
+                    };
+                    (function(d, s, id) {
+                        var js, fjs = d.getElementsByTagName(s)[0];
+                        if (d.getElementById(id)) return;
+                        js = d.createElement(s); js.id = id;
+                        js.src = "https://connect.facebook.net/en_US/sdk.js";
+                        fjs.parentNode.insertBefore(js, fjs);
+                    }(document, 'script', 'facebook-jssdk'));
+                });
+            },
+            
+            login() {
+                return new Promise((resolve, reject) => {
+                    FB.login(function(response) {
+                        if (response.authResponse) {
+                            resolve(response.authResponse);
+                        } else {
+                            reject(new Error('تم إلغاء تسجيل الدخول أو لم تمنح الصلاحيات المطلوبة.'));
+                        }
+                    }, {scope: 'pages_manage_posts,pages_show_list,pages_read_engagement'});
+                });
+            },
+
+            getUserInfo() {
+                return new Promise((resolve) => {
+                    FB.api('/me', {fields: 'id,name,picture'}, function(response) {
+                        resolve(response);
+                    });
+                });
+            },
+
+            getPages() {
+                return new Promise((resolve) => {
+                    FB.api('/me/accounts', {fields: 'id,name,access_token,picture{url}'}, function(response) {
+                        if (response && response.data) {
+                            resolve(response.data.map(p => ({
+                                id: p.id,
+                                name: p.name,
+                                accessToken: p.access_token,
+                                picture: p.picture?.data?.url || 'https://via.placeholder.com/50'
+                            })));
+                        } else {
+                            resolve([]);
+                        }
+                    });
+                });
+            },
+
+            async schedulePost(page, post) {
+                return new Promise((resolve) => {
+                    // Convert JS Date to UNIX Timestamp (Seconds) for Facebook
+                    const unixTime = Math.floor(new Date(post.scheduledDate).getTime() / 1000);
+                    
+                    const payload = {
+                        message: post.payload.text,
+                        published: false,
+                        scheduled_publish_time: unixTime,
+                        access_token: page.accessToken
+                    };
+
+                    if (post.payload.link) {
+                        payload.link = post.payload.link;
+                    }
+
+                    // Send the real POST request to Facebook Graph API
+                    FB.api(
+                        `/${page.id}/feed`,
+                        'POST',
+                        payload,
+                        function (response) {
+                            if (!response || response.error) {
+                                resolve({ error: response.error });
+                            } else {
+                                resolve({ id: response.id });
+                            }
+                        }
+                    );
+                });
+            }
+        };
+
+        // ==========================================
+        // REUSABLE COMPONENTS (Modals, Badges)
+        // ==========================================
+        function StatusBadge({ status }) {
+            const styles = {
+                pending: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-400',
+                scheduled: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-400',
+                published: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-400',
+                failed: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-400',
+                cancelled: 'bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+            };
+            return (
+                <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${styles[status]}`}>
+                    {status}
+                </span>
+            );
+        }
+
+        function ConfirmModal({ isOpen, title, message, onConfirm, onCancel }) {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl border border-gray-200 dark:border-gray-700">
+                        <h3 className="text-xl font-bold mb-2 dark:text-white">{title}</h3>
+                        <p className="text-gray-600 dark:text-gray-300 mb-6">{message}</p>
+                        <div className="flex justify-end gap-3">
+                            <button onClick={onCancel} className="px-4 py-2 rounded-xl text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 font-medium transition-colors">Cancel</button>
+                            <button onClick={onConfirm} className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium transition-colors">Confirm</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function Toast({ message, type, onClose }) {
+            if (!message) return null;
+            const colors = type === 'error' ? 'bg-red-100 border-red-500 text-red-800' : 'bg-green-100 border-green-500 text-green-800';
+            const icon = type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle';
+            return (
+                <div className={`fixed bottom-6 right-6 flex items-center gap-3 px-4 py-3 rounded-xl border-l-4 shadow-lg z-50 ${colors}`}>
+                    <i className={`fas ${icon} text-lg`}></i>
+                    <p className="font-medium">{message}</p>
+                    <button onClick={onClose} className="ml-4 opacity-70 hover:opacity-100"><i className="fas fa-times"></i></button>
+                </div>
+            );
+        }
+
+        // ==========================================
+        // MAIN VIEWS
+        // ==========================================
+        
+        function Dashboard({ posts }) {
+            const stats = useMemo(() => ({
+                total: posts.length,
+                scheduled: posts.filter(p => p.status === 'scheduled').length,
+                published: posts.filter(p => p.status === 'published').length,
+                pending: posts.filter(p => p.status === 'pending').length,
+                failed: posts.filter(p => p.status === 'failed').length,
+            }), [posts]);
+
+            const cards = [
+                { label: 'Total Posts', value: stats.total, icon: 'fa-file-alt', color: 'text-blue-500', bg: 'bg-blue-100 dark:bg-blue-900/30' },
+                { label: 'Scheduled (API)', value: stats.scheduled, icon: 'fa-check-circle', color: 'text-green-500', bg: 'bg-green-100 dark:bg-green-900/30' },
+                { label: 'Pending Processor', value: stats.pending, icon: 'fa-clock', color: 'text-yellow-500', bg: 'bg-yellow-100 dark:bg-yellow-900/30' },
+                { label: 'Failed', value: stats.failed, icon: 'fa-times-circle', color: 'text-red-500', bg: 'bg-red-100 dark:bg-red-900/30' },
+            ];
+
+            return (
+                <div className="space-y-6 max-w-6xl mx-auto animate-fade-in">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                        {cards.map((card, i) => (
+                            <div key={i} className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm flex items-center gap-4 transition-transform hover:-translate-y-1">
+                                <div className={`p-4 rounded-xl ${card.bg} ${card.color}`}>
+                                    <i className={`fas ${card.icon} text-2xl`}></i>
+                                </div>
+                                <div>
+                                    <p className="text-gray-500 dark:text-gray-400 text-sm font-medium">{card.label}</p>
+                                    <h4 className="text-2xl font-bold dark:text-white">{card.value}</h4>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+
+                    <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm p-6">
+                        <h3 className="text-lg font-semibold mb-4 dark:text-white">Recent Activity</h3>
+                        <div className="space-y-3">
+                            {posts.slice(0, 5).map(post => (
+                                <div key={post.id} className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-100 dark:border-gray-700">
+                                    <div className="flex flex-col">
+                                        <span className="font-medium text-sm truncate max-w-[200px] sm:max-w-md dark:text-gray-200">
+                                            {post.payload.text || 'Media Post'}
+                                        </span>
+                                        <span className="text-xs text-gray-500">
+                                            <i className="far fa-calendar-alt mr-1"></i>
+                                            {new Date(post.scheduledDate).toLocaleString()}
+                                        </span>
+                                    </div>
+                                    <StatusBadge status={post.status} />
+                                </div>
+                            ))}
+                            {posts.length === 0 && <p className="text-gray-500 text-sm text-center py-6 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl">No posts scheduled yet.</p>}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function Scheduler({ pages, settings, setPosts, addLog }) {
+            const [selectedPage, setSelectedPage] = useState(settings.defaultPageId || pages[0]?.id || '');
+            const [payload, setPayload] = useState({ text: '', link: '', firstComment: '' });
+            const [startDate, setStartDate] = useState('');
+            const [endDate, setEndDate] = useState('');
+            const [times, setTimes] = useState(settings.defaultPostingTimes.length ? settings.defaultPostingTimes : ['09:00']);
+            
+            const [generatedPreview, setGeneratedPreview] = useState([]);
+            const [isProcessing, setIsProcessing] = useState(false);
+            const [progress, setProgress] = useState({ current: 0, total: 0 });
+            const [toastMsg, setToastMsg] = useState(null);
+
+            const showToast = (msg, type='error') => {
+                setToastMsg({ message: msg, type });
+                setTimeout(() => setToastMsg(null), 4000);
+            };
+
+            const handleGenerate = () => {
+                if (!selectedPage || !payload.text || !startDate || !endDate || times.length === 0) {
+                    showToast("Please fill all required fields (Page, Caption, Dates, Times).", "error");
+                    return;
+                }
+
+                const start = new Date(startDate);
+                const end = new Date(endDate);
+                
+                if (end < start) {
+                    showToast("End date cannot be before start date.", "error");
+                    return;
+                }
+
+                const preview = [];
+                let curr = new Date(start);
+
+                while (curr <= end) {
+                    for (const timeStr of times) {
+                        const [hours, minutes] = timeStr.split(':').map(Number);
+                        const schedDate = new Date(curr);
+                        schedDate.setHours(hours, minutes, 0, 0);
+
+                        if (schedDate.getTime() > new Date().getTime()) {
+                            preview.push({
+                                id: generateId(),
+                                pageId: selectedPage,
+                                payload: { ...payload },
+                                scheduledDate: schedDate.toISOString(),
+                                status: 'pending',
+                                createdAt: new Date().toISOString()
+                            });
+                        }
+                    }
+                    curr.setDate(curr.getDate() + 1);
+                }
+
+                if (preview.length === 0) {
+                    showToast("No valid future dates generated based on selection.", "error");
+                    return;
+                }
+
+                setGeneratedPreview(preview);
+                addLog('info', 'Schedule Generated', `Generated ${preview.length} datetimes for preview.`);
+            };
+
+            const processQueue = async (queue) => {
+                setIsProcessing(true);
+                setProgress({ current: 0, total: queue.length });
+                
+                const page = pages.find(p => p.id === selectedPage);
+                setPosts(prev => [...queue, ...prev]);
+                setGeneratedPreview([]); 
+                
+                let successCount = 0;
+                let failCount = 0;
+
+                for (let i = 0; i < queue.length; i++) {
+                    const currentPost = queue[i];
+                    setProgress(p => ({ ...p, current: i + 1 }));
+                    
+                    const response = await GraphAPI.schedulePost(page, currentPost);
+                    
+                    setPosts(prev => prev.map(p => {
+                        if (p.id === currentPost.id) {
+                            if (response.error) {
+                                failCount++;
+                                addLog('error', 'Graph API Error', `Post ${p.id} failed: ${response.error.message}`);
+                                return { ...p, status: 'failed', errorMsg: response.error.message };
+                            } else {
+                                successCount++;
+                                addLog('success', 'Post Scheduled', `FB ID: ${response.id}`);
+                                return { ...p, status: 'scheduled', fbPostId: response.id };
+                            }
+                        }
+                        return p;
+                    }));
+                }
+                
+                setIsProcessing(false);
+                addLog('info', 'Bulk Complete', `Processed ${queue.length}. Success: ${successCount}, Failed: ${failCount}.`);
+                showToast(`Scheduling complete! ${successCount} succeeded, ${failCount} failed.`, failCount > 0 ? 'error' : 'success');
+            };
+
+            const addTime = () => {
+                const val = document.getElementById('newTime').value;
+                if(val && !times.includes(val)) setTimes([...times, val].sort());
+            };
+
+            return (
+                <div className="max-w-6xl mx-auto flex flex-col xl:flex-row gap-6 animate-fade-in">
+                    {toastMsg && <Toast message={toastMsg.message} type={toastMsg.type} onClose={() => setToastMsg(null)} />}
+                    
+                    {/* Left Form */}
+                    <div className="flex-1 space-y-6">
+                        <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm">
+                            <h3 className="text-lg font-bold mb-4 dark:text-white flex items-center gap-2"><i className="fab fa-facebook text-fb"></i> 1. Select Target Page</h3>
+                            <select 
+                                value={selectedPage} 
+                                onChange={e => setSelectedPage(e.target.value)}
+                                className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb transition-all"
+                            >
+                                <option value="">Select a Facebook Page...</option>
+                                {pages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </select>
+                        </div>
+
+                        <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm space-y-5">
+                            <h3 className="text-lg font-bold dark:text-white flex items-center gap-2"><i className="fas fa-edit text-blue-500"></i> 2. Content Setup</h3>
+                            
+                            <div>
+                                <label className="block text-sm font-semibold mb-2 dark:text-gray-300">Caption / Text *</label>
+                                <textarea 
+                                    rows="4" 
+                                    className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb transition-all resize-none"
+                                    placeholder="What's on your mind? This text will be applied to all scheduled dates."
+                                    value={payload.text}
+                                    onChange={e => setPayload({...payload, text: e.target.value})}
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-semibold mb-2 dark:text-gray-300">Link URL (Optional)</label>
+                                    <div className="relative">
+                                        <i className="fas fa-link absolute left-4 top-3.5 text-gray-400"></i>
+                                        <input 
+                                            type="url" 
+                                            className="w-full pl-10 pr-4 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl py-3 outline-none focus:border-fb"
+                                            placeholder="https://..."
+                                            value={payload.link}
+                                            onChange={e => setPayload({...payload, link: e.target.value})}
+                                        />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-semibold mb-2 dark:text-gray-300">First Comment (Optional)</label>
+                                    <div className="relative">
+                                        <i className="fas fa-comment absolute left-4 top-3.5 text-gray-400"></i>
+                                        <input 
+                                            type="text" 
+                                            className="w-full pl-10 pr-4 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl py-3 outline-none focus:border-fb"
+                                            placeholder="Auto-comment text..."
+                                            value={payload.firstComment}
+                                            onChange={e => setPayload({...payload, firstComment: e.target.value})}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div className="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-8 text-center hover:bg-gray-50 dark:hover:bg-gray-900/50 transition-colors cursor-pointer group">
+                                <i className="fas fa-cloud-upload-alt text-4xl text-gray-400 group-hover:text-fb mb-3 transition-colors"></i>
+                                <p className="text-sm font-bold dark:text-gray-200">Click to upload Media (Images/Video)</p>
+                                <p className="text-xs text-gray-500 mt-2">Simulated upload - No real files are stored.</p>
+                            </div>
+                        </div>
+
+                        <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm space-y-5">
+                            <h3 className="text-lg font-bold dark:text-white flex items-center gap-2"><i className="fas fa-clock text-green-500"></i> 3. Bulk Schedule Timing</h3>
+                            
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-semibold mb-2 dark:text-gray-300">Start Date *</label>
+                                    <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="w-full bg-gray-50 dark:bg-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-semibold mb-2 dark:text-gray-300">End Date *</label>
+                                    <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="w-full bg-gray-50 dark:bg-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb" />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-semibold mb-3 dark:text-gray-300">Posting Times (Daily) *</label>
+                                <div className="flex flex-wrap gap-3">
+                                    {times.map((t, idx) => (
+                                        <div key={idx} className="bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 px-4 py-2 rounded-xl flex items-center gap-3 text-sm font-bold border border-blue-100 dark:border-blue-800">
+                                            <i className="far fa-clock"></i> {t}
+                                            <button onClick={() => setTimes(times.filter((_, i) => i !== idx))} className="hover:text-red-500 transition-colors"><i className="fas fa-times-circle"></i></button>
+                                        </div>
+                                    ))}
+                                    <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-900 rounded-xl border border-gray-300 dark:border-gray-600 p-1">
+                                        <input type="time" id="newTime" className="bg-transparent px-2 outline-none text-sm font-bold dark:text-white" />
+                                        <button onClick={addTime} className="p-2 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200"><i className="fas fa-plus"></i></button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button onClick={handleGenerate} className="w-full mt-6 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 font-bold py-4 rounded-xl hover:bg-gray-800 dark:hover:bg-gray-200 transition-transform active:scale-[0.99] shadow-md">
+                                Generate Schedule Preview
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Right Preview */}
+                    <div className="flex-1 lg:max-w-md xl:max-w-lg flex flex-col">
+                        <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm flex-1 flex flex-col overflow-hidden sticky top-20 max-h-[calc(100vh-100px)]">
+                            <div className="p-6 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-900/50">
+                                <h3 className="text-lg font-bold dark:text-white"><i className="fas fa-list-ul text-gray-400 mr-2"></i> Queue Preview</h3>
+                                <span className="bg-fb text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-sm">
+                                    {generatedPreview.length} items
+                                </span>
+                            </div>
+                            
+                            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                                {generatedPreview.length === 0 ? (
+                                    <div className="h-full flex flex-col items-center justify-center text-gray-400 space-y-4">
+                                        <i className="far fa-calendar-times text-5xl opacity-20"></i>
+                                        <p className="font-medium">Configure dates and generate preview.</p>
+                                    </div>
+                                ) : (
+                                    generatedPreview.map((item, idx) => (
+                                        <div key={item.id} className="flex items-center justify-between p-4 rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30">
+                                            <div className="flex items-center gap-4">
+                                                <span className="text-gray-400 font-mono font-bold w-6">{idx + 1}.</span>
+                                                <div>
+                                                    <p className="font-bold dark:text-gray-200">{new Date(item.scheduledDate).toLocaleDateString()}</p>
+                                                    <p className="text-xs text-gray-500 font-mono mt-1"><i className="far fa-clock mr-1"></i>{new Date(item.scheduledDate).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                                                </div>
+                                            </div>
+                                            <button onClick={() => setGeneratedPreview(prev => prev.filter(p => p.id !== item.id))} className="text-gray-400 hover:text-red-500 p-2 transition-colors">
+                                                <i className="fas fa-trash-alt"></i>
+                                            </button>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+
+                            {generatedPreview.length > 0 && (
+                                <div className="p-5 border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-[0_-10px_30px_rgba(0,0,0,0.05)] z-10">
+                                    {isProcessing ? (
+                                        <div className="space-y-3">
+                                            <div className="flex justify-between text-sm font-bold dark:text-gray-300">
+                                                <span><i className="fas fa-spinner fa-spin mr-2"></i> Calling Graph API...</span>
+                                                <span>{progress.current} / {progress.total}</span>
+                                            </div>
+                                            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3 overflow-hidden">
+                                                <div className="bg-fb h-3 rounded-full transition-all duration-300 relative" style={{ width: `${(progress.current / progress.total) * 100}%` }}>
+                                                    <div className="absolute inset-0 bg-white/20 animate-pulse"></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <button onClick={() => processQueue(generatedPreview)} className="w-full bg-fb hover:bg-fb-hover text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-blue-500/30 flex items-center justify-center gap-2 text-lg active:scale-[0.98]">
+                                            <i className="fas fa-paper-plane"></i> Schedule All via API
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function PostList({ posts, setPosts, pages, addLog }) {
+            const [searchTerm, setSearchTerm] = useState('');
+            const [filterStatus, setFilterStatus] = useState('all');
+            const [selectedPosts, setSelectedPosts] = useState([]);
+            const [confirmModal, setConfirmModal] = useState({ isOpen: false, type: null, ids: [] });
+
+            const filteredPosts = posts.filter(p => {
+                const matchesSearch = p.payload.text.toLowerCase().includes(searchTerm.toLowerCase());
+                const matchesStatus = filterStatus === 'all' || p.status === filterStatus;
+                return matchesSearch && matchesStatus;
+            }).sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime());
+
+            const requestAction = (action, id = null) => {
+                const targetIds = id ? [id] : selectedPosts;
+                if (targetIds.length === 0) return;
+                setConfirmModal({ 
+                    isOpen: true, 
+                    type: action, 
+                    ids: targetIds,
+                    title: action === 'delete' ? 'Delete Posts?' : 'Cancel Schedule?',
+                    message: `Are you sure you want to ${action} ${targetIds.length} selected post(s)? This action cannot be undone.`
+                });
+            };
+
+            const executeAction = () => {
+                const { type, ids } = confirmModal;
+                if (type === 'delete') {
+                    setPosts(prev => prev.filter(p => !ids.includes(p.id)));
+                    addLog('info', 'Bulk Action', `Deleted ${ids.length} posts.`);
+                } else if (type === 'cancel') {
+                    setPosts(prev => prev.map(p => ids.includes(p.id) ? { ...p, status: 'cancelled' } : p));
+                    addLog('warning', 'Bulk Action', `Cancelled ${ids.length} scheduled posts.`);
+                }
+                setSelectedPosts([]);
+                setConfirmModal({ isOpen: false, type: null, ids: [] });
+            };
+
+            const toggleSelect = (id) => setSelectedPosts(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+            return (
+                <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col h-full animate-fade-in">
+                    <ConfirmModal 
+                        isOpen={confirmModal.isOpen} 
+                        title={confirmModal.title} 
+                        message={confirmModal.message} 
+                        onConfirm={executeAction} 
+                        onCancel={() => setConfirmModal({ isOpen: false, type: null, ids: [] })} 
+                    />
+
+                    <div className="p-5 border-b border-gray-200 dark:border-gray-700 flex flex-col sm:flex-row justify-between items-center gap-4 bg-gray-50/50 dark:bg-gray-900/20 rounded-t-2xl">
+                        <div className="flex gap-3 w-full sm:w-auto">
+                            <div className="relative flex-1 sm:w-64">
+                                <i className="fas fa-search absolute left-4 top-3.5 text-gray-400"></i>
+                                <input 
+                                    type="text" placeholder="Search content..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
+                                    className="pl-10 pr-4 py-2.5 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl text-sm w-full outline-none focus:border-fb dark:text-white transition-all shadow-sm"
+                                />
+                            </div>
+                            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="px-4 py-2.5 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl text-sm outline-none font-medium dark:text-white shadow-sm">
+                                <option value="all">All Statuses</option>
+                                <option value="scheduled">Scheduled</option>
+                                <option value="pending">Pending</option>
+                                <option value="failed">Failed</option>
+                                <option value="cancelled">Cancelled</option>
+                            </select>
+                        </div>
+
+                        {selectedPosts.length > 0 && (
+                            <div className="flex items-center gap-3 bg-blue-50 dark:bg-blue-900/30 px-5 py-2.5 rounded-xl border border-blue-200 dark:border-blue-800 shadow-sm animate-fade-in">
+                                <span className="text-sm font-bold text-blue-700 dark:text-blue-300"><i className="fas fa-check-double mr-2"></i>{selectedPosts.length} selected</span>
+                                <div className="h-5 w-px bg-blue-300 dark:bg-blue-700"></div>
+                                <button onClick={() => requestAction('cancel')} className="text-sm text-yellow-600 hover:text-yellow-700 dark:text-yellow-400 font-bold flex items-center gap-1"><i className="fas fa-pause-circle"></i> Cancel</button>
+                                <button onClick={() => requestAction('delete')} className="text-sm text-red-600 hover:text-red-700 dark:text-red-400 font-bold flex items-center gap-1 ml-2"><i className="fas fa-trash-alt"></i> Delete</button>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="flex-1 overflow-auto">
+                        <table className="w-full text-left text-sm whitespace-nowrap">
+                            <thead className="bg-gray-100 dark:bg-gray-900/80 text-gray-600 dark:text-gray-400 sticky top-0 z-10 shadow-sm">
+                                <tr>
+                                    <th className="p-4 w-12 text-center">
+                                        <button onClick={() => setSelectedPosts(selectedPosts.length === filteredPosts.length && filteredPosts.length > 0 ? [] : filteredPosts.map(p => p.id))}>
+                                            <i className={`fas fa-check-square text-lg ${selectedPosts.length === filteredPosts.length && filteredPosts.length > 0 ? 'text-fb' : 'text-gray-300 dark:text-gray-600'}`}></i>
+                                        </button>
+                                    </th>
+                                    <th className="p-4 font-bold">Content Preview</th>
+                                    <th className="p-4 font-bold">Target Page</th>
+                                    <th className="p-4 font-bold">Scheduled Time</th>
+                                    <th className="p-4 font-bold">Status</th>
+                                    <th className="p-4 font-bold text-right pr-8">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100 dark:divide-gray-700/50">
+                                {filteredPosts.map(post => {
+                                    const page = pages.find(p => p.id === post.pageId);
+                                    return (
+                                        <tr key={post.id} className="hover:bg-blue-50/50 dark:hover:bg-gray-800/80 transition-colors group">
+                                            <td className="p-4 text-center">
+                                                <button onClick={() => toggleSelect(post.id)}>
+                                                    <i className={`fas fa-check-square text-lg transition-colors ${selectedPosts.includes(post.id) ? 'text-fb' : 'text-gray-300 dark:text-gray-600 group-hover:text-gray-400'}`}></i>
+                                                </button>
+                                            </td>
+                                            <td className="p-4">
+                                                <div className="max-w-xs truncate font-medium dark:text-gray-200">{post.payload.text || '(Media only)'}</div>
+                                                {post.errorMsg && <div className="text-xs text-red-500 truncate max-w-xs mt-1" title={post.errorMsg}><i className="fas fa-exclamation-triangle mr-1"></i>{post.errorMsg}</div>}
+                                                {post.fbPostId && <div className="text-xs text-gray-400 font-mono mt-1"><i className="fab fa-facebook mr-1"></i>{post.fbPostId}</div>}
+                                            </td>
+                                            <td className="p-4 text-gray-500 dark:text-gray-400 font-medium">{page?.name || 'Unknown'}</td>
+                                            <td className="p-4 font-mono text-xs dark:text-gray-300 bg-gray-50 dark:bg-gray-900/50 rounded-lg inline-block mt-3 px-2 py-1"><i className="far fa-calendar-alt mr-2 text-fb"></i>{new Date(post.scheduledDate).toLocaleString()}</td>
+                                            <td className="p-4"><StatusBadge status={post.status} /></td>
+                                            <td className="p-4 text-right pr-6 space-x-2">
+                                                {post.status === 'scheduled' && (
+                                                    <button onClick={() => requestAction('cancel', post.id)} className="w-8 h-8 rounded-full bg-yellow-50 text-yellow-600 hover:bg-yellow-100 dark:bg-yellow-900/30 dark:text-yellow-500 transition-colors" title="Cancel"><i className="fas fa-pause"></i></button>
+                                                )}
+                                                <button onClick={() => requestAction('delete', post.id)} className="w-8 h-8 rounded-full bg-red-50 text-red-500 hover:bg-red-100 dark:bg-red-900/30 dark:text-red-400 transition-colors" title="Delete"><i className="fas fa-trash-alt"></i></button>
+                                            </td>
+                                        </tr>
+                                    )
+                                })}
+                                {filteredPosts.length === 0 && (
+                                    <tr><td colSpan="6" className="p-12 text-center text-gray-500 dark:text-gray-400 font-medium">No posts found matching criteria.</td></tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        function Calendar({ posts }) {
+            const [currentDate, setCurrentDate] = useState(new Date());
+
+            const daysInMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate();
+            const firstDay = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1).getDay();
+
+            const days = Array.from({ length: firstDay }, () => null).concat(Array.from({ length: daysInMonth }, (_, i) => i + 1));
+
+            const getPostsForDay = (day) => posts.filter(p => {
+                const d = new Date(p.scheduledDate);
+                return d.getDate() === day && d.getMonth() === currentDate.getMonth() && d.getFullYear() === currentDate.getFullYear();
+            });
+
+            return (
+                <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 flex flex-col h-full animate-fade-in">
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-bold dark:text-white capitalize">
+                            <i className="far fa-calendar text-fb mr-3"></i>
+                            {currentDate.toLocaleString('default', { month: 'long', year: 'numeric' })}
+                        </h2>
+                        <div className="flex gap-2">
+                            <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))} className="p-2.5 bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors text-gray-700 dark:text-gray-300"><i className="fas fa-chevron-left"></i></button>
+                            <button onClick={() => setCurrentDate(new Date())} className="px-5 py-2.5 text-sm bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 font-bold transition-colors dark:text-white">Today</button>
+                            <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1))} className="p-2.5 bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors text-gray-700 dark:text-gray-300"><i className="fas fa-chevron-right"></i></button>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-7 gap-px bg-gray-200 dark:bg-gray-700 rounded-2xl overflow-hidden flex-1 border border-gray-200 dark:border-gray-700 shadow-inner">
+                        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+                            <div key={day} className="bg-gray-100 dark:bg-gray-900/80 p-3 text-center text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                {day}
+                            </div>
+                        ))}
+                        {days.map((day, idx) => {
+                            const dayPosts = day ? getPostsForDay(day) : [];
+                            const isToday = day === new Date().getDate() && currentDate.getMonth() === new Date().getMonth() && currentDate.getFullYear() === new Date().getFullYear();
+                            
+                            return (
+                                <div key={idx} className={`bg-white dark:bg-gray-800 p-2 min-h-[120px] transition-colors ${isToday ? 'bg-blue-50/50 dark:bg-blue-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'}`}>
+                                    {day && (
+                                        <>
+                                            <span className={`text-sm font-bold w-8 h-8 flex items-center justify-center rounded-full mb-2 ${isToday ? 'bg-fb text-white shadow-md shadow-blue-500/30' : 'text-gray-500 dark:text-gray-300'}`}>{day}</span>
+                                            <div className="flex flex-col gap-1.5 overflow-y-auto max-h-[100px] no-scrollbar">
+                                                {dayPosts.slice(0,4).map(p => (
+                                                    <div key={p.id} className={`text-[10px] font-medium px-2 py-1.5 rounded-md truncate border shadow-sm flex items-center gap-1
+                                                        ${p.status === 'scheduled' ? 'bg-green-50 border-green-200 text-green-700 dark:bg-green-900/30 dark:border-green-800 dark:text-green-400' 
+                                                        : p.status === 'failed' ? 'bg-red-50 border-red-200 text-red-700 dark:bg-red-900/30 dark:border-red-800 dark:text-red-400' 
+                                                        : 'bg-gray-100 border-gray-200 text-gray-700 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300'}`}>
+                                                        <i className={`fas ${p.status === 'scheduled' ? 'fa-check' : p.status === 'failed' ? 'fa-times' : 'fa-clock'} opacity-50`}></i>
+                                                        <span>{new Date(p.scheduledDate).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                                    </div>
+                                                ))}
+                                                {dayPosts.length > 4 && <div className="text-[10px] text-gray-400 font-bold pl-1 text-center bg-gray-100 dark:bg-gray-700 rounded py-1 cursor-pointer">+{dayPosts.length - 4} more</div>}
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+                            )
+                        })}
+                    </div>
+                </div>
+            );
+        }
+
+        function Logs({ logs, clearLogs }) {
+            return (
+                <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 h-full flex flex-col animate-fade-in">
+                    <div className="p-5 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-900/20 rounded-t-2xl">
+                        <h3 className="font-bold text-lg dark:text-white"><i className="fas fa-terminal text-gray-400 mr-2"></i> System API Logs</h3>
+                        <button onClick={clearLogs} className="text-sm text-red-500 hover:text-white font-bold px-4 py-2 bg-red-50 hover:bg-red-500 dark:bg-red-900/20 dark:hover:bg-red-600 rounded-xl transition-colors border border-red-100 dark:border-red-800/30 shadow-sm"><i className="fas fa-trash-alt mr-2"></i>Clear Logs</button>
+                    </div>
+                    <div className="flex-1 overflow-auto p-5 space-y-3 font-mono text-sm">
+                        {logs.length === 0 ? (
+                            <div className="h-full flex flex-col items-center justify-center text-gray-400 opacity-50">
+                                <i className="fas fa-clipboard-list text-5xl mb-4"></i>
+                                <p>No logs available.</p>
+                            </div>
+                        ) : (
+                            logs.map(log => (
+                                <div key={log.id} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 p-4 rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 hover:bg-gray-100 dark:hover:bg-gray-900 transition-colors">
+                                    <span className="text-gray-400 text-xs shrink-0 bg-white dark:bg-gray-800 px-2 py-1 rounded shadow-sm border border-gray-100 dark:border-gray-700">
+                                        {new Date(log.timestamp).toLocaleTimeString()}
+                                    </span>
+                                    <span className={`w-24 uppercase font-bold text-xs flex items-center gap-1 ${
+                                        log.level === 'error' ? 'text-red-500' : log.level === 'success' ? 'text-green-500' : log.level === 'warning' ? 'text-yellow-500' : 'text-blue-500'
+                                    }`}>
+                                        <i className={`fas ${log.level === 'error' ? 'fa-times-circle' : log.level === 'success' ? 'fa-check-circle' : log.level === 'warning' ? 'fa-exclamation-triangle' : 'fa-info-circle'}`}></i>
+                                        {log.level}
+                                    </span>
+                                    <span className="font-bold min-w-[140px] dark:text-gray-200">{log.action}</span>
+                                    <span className="text-gray-600 dark:text-gray-400 break-all">{log.details}</span>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        function SettingsView({ settings, setSettings, addLog, pages }) {
+            const [toast, setToast] = useState(false);
+
+            const handleSave = (e) => {
+                e.preventDefault();
+                addLog('success', 'Settings Updated', 'Application preferences saved locally.');
+                setToast(true);
+                setTimeout(() => setToast(false), 3000);
+            };
+
+            return (
+                <div className="max-w-3xl mx-auto bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 animate-fade-in relative">
+                    {toast && <Toast message="Settings saved successfully!" type="success" onClose={()=>setToast(false)}/>}
+                    
+                    <h2 className="text-2xl font-bold mb-8 border-b border-gray-100 dark:border-gray-700 pb-5 dark:text-white flex items-center gap-3">
+                        <i className="fas fa-cog text-gray-400"></i> Application Settings
+                    </h2>
+                    
+                    <form onSubmit={handleSave} className="space-y-8">
+                        <div>
+                            <label className="block text-sm font-bold mb-3 dark:text-gray-300">Default Timezone</label>
+                            <select 
+                                value={settings.timezone}
+                                onChange={e => setSettings({...settings, timezone: e.target.value})}
+                                className="w-full bg-gray-50 dark:bg-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb shadow-sm"
+                            >
+                                {Intl.supportedValuesOf('timeZone').map(tz => <option key={tz} value={tz}>{tz}</option>)}
+                            </select>
+                            <p className="text-xs text-gray-500 mt-2"><i className="fas fa-info-circle mr-1"></i> Generated schedules will align with this timezone.</p>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-bold mb-3 dark:text-gray-300">Default Facebook Page</label>
+                            <select 
+                                value={settings.defaultPageId || ''}
+                                onChange={e => setSettings({...settings, defaultPageId: e.target.value})}
+                                className="w-full bg-gray-50 dark:bg-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb shadow-sm"
+                            >
+                                <option value="">None (Select manually each time)</option>
+                                {pages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-bold mb-3 dark:text-gray-300">Security & Advanced</label>
+                            <div className="space-y-4 bg-gray-50 dark:bg-gray-900/50 p-5 rounded-2xl border border-gray-200 dark:border-gray-700">
+                                <label className="flex items-center gap-4 cursor-not-allowed opacity-80">
+                                    <input type="checkbox" checked readOnly className="w-5 h-5 text-fb rounded border-gray-300 accent-fb" />
+                                    <span className="text-sm font-bold dark:text-gray-300">Encrypt access tokens locally (AES-256)</span>
+                                </label>
+                                <label className="flex items-center gap-4 cursor-pointer">
+                                    <input type="checkbox" checked={settings.autoRefresh} onChange={e => setSettings({...settings, autoRefresh: e.target.checked})} className="w-5 h-5 text-fb rounded border-gray-300 accent-fb" />
+                                    <span className="text-sm font-bold dark:text-gray-300">Auto-refresh Dashboard statistics</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div className="pt-4">
+                            <button type="submit" className="bg-fb hover:bg-fb-hover text-white font-bold px-8 py-3.5 rounded-xl shadow-lg shadow-blue-500/30 transition-transform active:scale-95 flex items-center gap-2">
+                                <i className="fas fa-save"></i> Save Preferences
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            );
+        }
+
+        // ==========================================
+        // LAYOUT & APP ROOT
+        // ==========================================
+        
+        function LoginScreen({ onLogin, theme, toggleTheme }) {
+            const [loading, setLoading] = useState(false);
+            const [appId, setAppId] = useState(() => DB.get('fb_app_id', ''));
+            const [error, setError] = useState('');
+            
+            const handleLogin = async () => {
+                if (!appId.trim()) {
+                    setError('يرجى إدخال Facebook App ID الخاص بك.');
+                    return;
+                }
+                
+                setLoading(true);
+                setError('');
+                DB.set('fb_app_id', appId.trim());
+
+                try {
+                    await GraphAPI.init(appId.trim());
+                    await GraphAPI.login();
+                    const userInfo = await GraphAPI.getUserInfo();
+                    const userPages = await GraphAPI.getPages();
+                    
+                    onLogin({
+                        user: {
+                            id: userInfo.id,
+                            name: userInfo.name,
+                            picture: userInfo.picture?.data?.url || 'https://via.placeholder.com/150'
+                        },
+                        pages: userPages
+                    });
+                } catch (err) {
+                    setError(err.message || 'فشل تسجيل الدخول. تأكد من صحة App ID ومن أنك تسمح بالنوافذ المنبثقة (Popups).');
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className={`min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 transition-colors duration-200 ${theme}`}>
+                    <button onClick={toggleTheme} className="absolute top-6 right-6 w-12 h-12 flex items-center justify-center rounded-full bg-white dark:bg-gray-800 shadow-md border border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                        <i className={`fas ${theme === 'dark' ? 'fa-sun text-yellow-400' : 'fa-moon text-gray-600'} text-xl`}></i>
+                    </button>
+
+                    <div className="max-w-md w-full p-10 bg-white dark:bg-gray-800 rounded-3xl shadow-2xl shadow-blue-500/10 border border-gray-100 dark:border-gray-700 text-center relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-fb to-blue-400"></div>
+                        
+                        <div className="w-20 h-20 bg-gradient-to-tr from-fb to-blue-500 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-blue-500/40">
+                            <i className="fab fa-facebook-f text-4xl text-white"></i>
+                        </div>
+                        
+                        <h1 className="text-3xl font-extrabold text-gray-900 dark:text-white mb-2">Bulk Scheduler</h1>
+                        <p className="text-gray-500 dark:text-gray-400 mb-6 text-sm leading-relaxed">اتصال حقيقي بـ Meta Graph API</p>
+                        
+                        <div className="mb-6 text-left">
+                            <label className="block text-sm font-bold mb-2 dark:text-gray-300">Facebook App ID <a href="https://developers.facebook.com/apps/" target="_blank" className="text-fb hover:underline ml-1 font-normal text-xs">(احصل عليه من هنا)</a></label>
+                            <input 
+                                type="text" 
+                                value={appId}
+                                onChange={(e) => setAppId(e.target.value)}
+                                placeholder="مثال: 123456789012345"
+                                className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb"
+                            />
+                            {error && <p className="text-red-500 text-xs mt-2 font-medium"><i className="fas fa-exclamation-circle mr-1"></i> {error}</p>}
+                            <p className="text-xs text-gray-400 mt-2"><i className="fas fa-info-circle"></i> ملاحظة: يجب تشغيل هذا الملف على خادم محلي (Localhost) وليس بفتحه مباشرة (file://) لكي يعمل تسجيل الدخول.</p>
+                        </div>
+
+                        <button 
+                            onClick={handleLogin} disabled={loading}
+                            className="w-full flex items-center justify-center gap-3 bg-fb hover:bg-fb-hover text-white py-4 px-6 rounded-xl font-bold text-lg transition-transform hover:scale-[1.02] active:scale-95 shadow-xl shadow-blue-500/30 disabled:opacity-70 disabled:hover:scale-100"
+                        >
+                            {loading ? <i className="fas fa-spinner fa-spin"></i> : <i className="fab fa-facebook"></i>}
+                            {loading ? 'جاري الاتصال بـ Meta...' : 'تسجيل الدخول باستخدام فيسبوك'}
+                        </button>
+                        
+                        <div className="mt-8 pt-6 border-t border-gray-100 dark:border-gray-700">
+                            <p className="text-xs text-gray-400 dark:text-gray-500 font-medium">
+                                <i className="fas fa-lock mr-1"></i> نطلب فقط صلاحيات صفحاتك للتمكن من الجدولة.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function Sidebar({ view, setView, user, onLogout }) {
+            const nav = [
+                { id: 'dashboard', icon: 'fa-chart-pie', label: 'Dashboard' },
+                { id: 'scheduler', icon: 'fa-plus-square', label: 'New Schedule' },
+                { id: 'calendar', icon: 'fa-calendar-alt', label: 'Calendar' },
+                { id: 'posts', icon: 'fa-tasks', label: 'Post Manager' },
+                { id: 'logs', icon: 'fa-terminal', label: 'System Logs' },
+                { id: 'settings', icon: 'fa-cog', label: 'Settings' },
+            ];
+
+            return (
+                <aside className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col transition-colors z-20 hidden md:flex shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+                    <div className="p-6 flex items-center gap-3">
+                        <div className="bg-gradient-to-br from-fb to-blue-600 w-10 h-10 rounded-xl flex items-center justify-center shadow-md shadow-blue-500/30"><i className="fab fa-facebook-f text-white text-lg"></i></div>
+                        <span className="font-extrabold text-xl tracking-tight dark:text-white">BulkSched</span>
+                    </div>
+
+                    <nav className="flex-1 px-4 py-2 space-y-1.5 overflow-y-auto">
+                        {nav.map(item => {
+                            const active = view === item.id;
+                            return (
+                                <button
+                                    key={item.id}
+                                    onClick={() => setView(item.id)}
+                                    className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl transition-all font-bold text-sm ${
+                                        active 
+                                            ? 'bg-blue-50 dark:bg-fb text-fb dark:text-white shadow-sm' 
+                                            : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                                    }`}
+                                >
+                                    <i className={`fas ${item.icon} w-5 text-center ${active ? '' : 'opacity-70'}`}></i>
+                                    {item.label}
+                                </button>
+                            )
+                        })}
+                    </nav>
+
+                    <div className="p-4 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/20">
+                        <div className="flex items-center gap-3 p-2 bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 shadow-sm">
+                            <img src={user.picture} alt="User" className="w-10 h-10 rounded-lg bg-gray-200 shrink-0" />
+                            <div className="flex-1 min-w-0">
+                                <p className="text-sm font-bold truncate dark:text-white">{user.name}</p>
+                                <p className="text-xs text-fb font-semibold truncate">Pro Plan</p>
+                            </div>
+                            <button onClick={onLogout} className="text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors w-8 h-8 rounded-lg flex items-center justify-center shrink-0" title="Logout">
+                                <i className="fas fa-sign-out-alt"></i>
+                            </button>
+                        </div>
+                    </div>
+                </aside>
+            );
+        }
+
+        function App() {
+            const [theme, setTheme] = useState(() => DB.get('theme', 'light'));
+            const [user, setUser] = useState(() => DB.get('user', null));
+            const [view, setView] = useState('dashboard');
+            
+            const [pages, setPages] = useState(() => DB.get('pages', []));
+            const [posts, setPosts] = useState(() => DB.get('posts', []));
+            const [logs, setLogs] = useState(() => DB.get('logs', []));
+            const [settings, setSettings] = useState(() => DB.get('settings', {
+                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                defaultPostingTimes: ['09:00', '15:00', '21:00'],
+                autoRefresh: true
+            }));
+
+            useEffect(() => { DB.set('theme', theme); }, [theme]);
+            useEffect(() => { DB.set('user', user); }, [user]);
+            useEffect(() => { DB.set('pages', pages); }, [pages]);
+            useEffect(() => { DB.set('posts', posts); }, [posts]);
+            useEffect(() => { DB.set('logs', logs); }, [logs]);
+            useEffect(() => { DB.set('settings', settings); }, [settings]);
+
+            useEffect(() => {
+                const root = document.documentElement;
+                if (theme === 'dark') root.classList.add('dark');
+                else root.classList.remove('dark');
+            }, [theme]);
+
+            // Re-initialize FB SDK if the user refreshes the page while logged in
+            useEffect(() => {
+                if (user) {
+                    const savedAppId = DB.get('fb_app_id', '');
+                    if (savedAppId) GraphAPI.init(savedAppId);
+                }
+            }, [user]);
+
+            const addLog = useCallback((level, action, details) => {
+                setLogs(prev => [{ id: generateId(), timestamp: new Date().toISOString(), level, action, details }, ...prev].slice(0, 500));
+            }, []);
+
+            const login = (authData) => {
+                setUser(authData.user);
+                setPages(authData.pages);
+                addLog('success', 'OAuth Success', `تم تسجيل الدخول بنجاح. تم تحميل ${authData.pages.length} صفحة.`);
+            };
+
+            const logout = () => {
+                setUser(null);
+                setPages([]);
+                if (window.FB) window.FB.logout();
+                addLog('info', 'Session Ended', 'تم تسجيل الخروج.');
+            };
+
+            if (!user) {
+                return <LoginScreen onLogin={login} theme={theme} toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />;
+            }
+
+            const viewTitles = { dashboard: 'Overview', scheduler: 'Bulk Generator', calendar: 'Schedule Calendar', posts: 'Queue Manager', logs: 'System Logs', settings: 'Settings' };
+
+            return (
+                <div className={`min-h-screen flex transition-colors duration-200 ${theme}`}>
+                    <Sidebar view={view} setView={setView} user={user} onLogout={logout} />
+                    
+                    <main className="flex-1 flex flex-col h-screen overflow-hidden bg-gray-50 dark:bg-gray-900 relative">
+                        {/* Header */}
+                        <header className="h-20 bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-b border-gray-200 dark:border-gray-800 flex items-center justify-between px-8 sticky top-0 z-30">
+                            <div className="flex items-center gap-4">
+                                <button className="md:hidden text-gray-500 hover:text-gray-900 dark:hover:text-white"><i className="fas fa-bars text-xl"></i></button>
+                                <h2 className="text-2xl font-extrabold tracking-tight dark:text-white">{viewTitles[view]}</h2>
+                            </div>
+                            <button 
+                                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                                className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors shadow-sm border border-gray-200 dark:border-gray-700"
+                            >
+                                <i className={`fas ${theme === 'dark' ? 'fa-sun text-yellow-400' : 'fa-moon text-gray-600'}`}></i>
+                            </button>
+                        </header>
+                        
+                        {/* Main Content Area */}
+                        <div className="flex-1 overflow-y-auto p-6 md:p-8">
+                            <style>{`
+                                @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+                                .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
+                            `}</style>
+                            
+                            {view === 'dashboard' && <Dashboard posts={posts} />}
+                            {view === 'scheduler' && <Scheduler pages={pages} settings={settings} setPosts={setPosts} addLog={addLog} />}
+                            {view === 'calendar' && <Calendar posts={posts} />}
+                            {view === 'posts' && <PostList posts={posts} setPosts={setPosts} pages={pages} addLog={addLog} />}
+                            {view === 'logs' && <Logs logs={logs} clearLogs={() => setLogs([])} />}
+                            {view === 'settings' && <SettingsView settings={settings} setSettings={setSettings} addLog={addLog} pages={pages} />}
+                        </div>
+                    </main>
+                </div>
+            );
+        }
+
+        // Render App
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
