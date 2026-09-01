@@ -1,573 +1,1321 @@
 <!DOCTYPE html>
-<html lang="en" class="light">
+<html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Facebook Bulk Scheduler</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>نظام إدارة الدروس الخصوصية</title>
     
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
-            darkMode: 'class',
             theme: {
                 extend: {
                     fontFamily: {
-                        sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
+                        sans: ['Cairo', 'sans-serif'],
                     },
                     colors: {
-                        fb: '#1877F2',
-                        'fb-hover': '#166FE5'
+                        primary: '#4f46e5', // Indigo 600
+                        secondary: '#6366f1', // Indigo 500
+                        success: '#10b981', // Emerald 500
+                        danger: '#f43f5e', // Rose 500
+                        warning: '#f59e0b', // Amber 500
+                        surface: '#ffffff',
+                        background: '#f8fafc', // Slate 50
                     }
                 }
             }
         }
     </script>
     
-    <!-- FontAwesome for Icons -->
+    <!-- Google Fonts: Cairo -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome (Icons) -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
-    <!-- React & ReactDOM (Production) -->
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    
-    <!-- Babel standalone for JSX compilation in browser -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <style>
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-        .dark ::-webkit-scrollbar-thumb { background: #475569; }
-        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        body {
+            font-family: 'Cairo', sans-serif;
+            background-color: #f8fafc;
+            color: #334155;
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        /* Hide scrollbar for clean UI but keep functionality */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        /* Smooth transitions */
+        .view-section {
+            display: none;
+            animation: fadeIn 0.3s ease-in-out;
+        }
+        .view-section.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Bottom Nav Safe Area for modern phones */
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
+        
+        /* Modal Animation */
+        .modal-overlay {
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.2s ease;
+        }
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        .modal-content {
+            transform: scale(0.95) translateY(20px);
+            transition: all 0.2s ease;
+        }
+        .modal-overlay.active .modal-content {
+            transform: scale(1) translateY(0);
+        }
+
+        /* Status Badges */
+        .badge { @apply px-2 py-1 text-xs font-semibold rounded-full; }
+        .badge-paid { @apply bg-emerald-100 text-emerald-700; }
+        .badge-unpaid { @apply bg-rose-100 text-rose-700; }
+        .badge-partial { @apply bg-amber-100 text-amber-700; }
+        
+        /* Schedule Grid */
+        .schedule-grid {
+            display: grid;
+            grid-template-columns: 80px repeat(7, minmax(120px, 1fr));
+            gap: 1px;
+            background-color: #e2e8f0;
+            overflow-x: auto;
+        }
+        .schedule-cell {
+            @apply bg-white p-2 min-h-[60px] relative border-b border-l border-slate-100;
+        }
+        .schedule-header {
+            @apply bg-slate-50 font-semibold text-center p-3 sticky top-0 z-10;
+        }
+        .time-col {
+            @apply bg-slate-50 font-semibold text-center p-2 sticky right-0 z-10 text-sm flex items-center justify-center;
+        }
     </style>
 </head>
-<body class="bg-gray-50 text-gray-900 transition-colors duration-200 antialiased">
-    <div id="root"></div>
+<body class="flex h-screen overflow-hidden text-slate-800">
 
-    <script type="text/babel">
-        const { useState, useEffect, useMemo, useCallback } = React;
+    <aside class="hidden md:flex flex-col w-64 bg-white border-l border-slate-200 h-full shadow-sm z-20">
+        <div class="p-6 border-b border-slate-100 flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-primary flex items-center justify-center text-white shadow-md shadow-primary/30">
+                <i class="fa-solid fa-graduation-cap text-xl"></i>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold text-slate-800 tracking-tight">نظام إدارتي</h1>
+                <p class="text-xs text-slate-500">للدروس والمجموعات</p>
+            </div>
+        </div>
+        <nav class="flex-1 p-4 space-y-2 overflow-y-auto nav-menu">
+            <!-- Nav links generated by JS -->
+        </nav>
+        <div class="p-4 border-t border-slate-100">
+            <p class="text-xs text-center text-slate-400">حفظ محلي <i class="fa-solid fa-cloud-arrow-down mx-1"></i> يعمل بدون إنترنت</p>
+        </div>
+    </aside>
 
-        // ==========================================
-        // UTILS & DB
-        // ==========================================
-        const generateId = () => Math.random().toString(36).substring(2, 15);
+    <main class="flex-1 flex flex-col h-full bg-slate-50 relative overflow-hidden pb-16 md:pb-0">
+        <!-- Top Header (Mobile & Desktop) -->
+        <header class="bg-white px-6 py-4 border-b border-slate-200 flex justify-between items-center shadow-sm z-10 sticky top-0">
+            <h2 id="page-title" class="text-xl font-bold text-slate-800">الرئيسية</h2>
+            <div class="flex items-center gap-3">
+                <span id="current-month-badge" class="bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full text-sm font-semibold"></span>
+            </div>
+        </header>
 
-        class DB {
-            static get(key, defaultValue) {
-                const stored = localStorage.getItem(`fbsched_${key}`);
-                return stored ? JSON.parse(stored) : defaultValue;
-            }
-            static set(key, value) {
-                localStorage.setItem(`fbsched_${key}`, JSON.stringify(value));
-            }
-        }
-
-        // --- REAL FACEBOOK GRAPH API INTEGRATION ---
-        const GraphAPI = {
-            init(appId) {
-                return new Promise((resolve, reject) => {
-                    if (window.FB) return resolve();
-                    window.fbAsyncInit = function() {
-                        window.FB.init({
-                            appId      : appId,
-                            cookie     : true,
-                            xfbml      : true,
-                            version    : 'v20.0'
-                        });
-                        resolve();
-                    };
-                    (function(d, s, id) {
-                        var js, fjs = d.getElementsByTagName(s)[0];
-                        if (d.getElementById(id)) { resolve(); return; }
-                        js = d.createElement(s); js.id = id;
-                        js.src = "https://connect.facebook.net/en_US/sdk.js";
-                        js.onerror = () => reject(new Error("تم حظر الاتصال بفيسبوك. يرجى إيقاف مانع الإعلانات (AdBlock)."));
-                        fjs.parentNode.insertBefore(js, fjs);
-                    }(document, 'script', 'facebook-jssdk'));
-                });
-            },
+        <!-- Views Container -->
+        <div id="views-container" class="flex-1 overflow-y-auto p-4 md:p-6 no-scrollbar">
             
-            login() {
-                return new Promise((resolve, reject) => {
-                    window.FB.login(function(response) {
-                        if (response.authResponse) {
-                            resolve(response.authResponse);
-                        } else {
-                            reject(new Error('تم إلغاء تسجيل الدخول أو لم تمنح الصلاحيات.'));
-                        }
-                    }, {scope: 'pages_manage_posts,pages_show_list,pages_read_engagement'});
-                });
-            },
-
-            getUserInfo() {
-                return new Promise((resolve) => {
-                    window.FB.api('/me', {fields: 'id,name,picture'}, function(response) { resolve(response); });
-                });
-            },
-
-            getPages() {
-                return new Promise((resolve) => {
-                    window.FB.api('/me/accounts', {fields: 'id,name,access_token,picture{url}'}, function(response) {
-                        if (response && response.data) {
-                            resolve(response.data.map(p => ({
-                                id: p.id, name: p.name, accessToken: p.access_token,
-                                picture: p.picture?.data?.url || 'https://via.placeholder.com/50'
-                            })));
-                        } else { resolve([]); }
-                    });
-                });
-            },
-
-            async schedulePost(page, post) {
-                return new Promise((resolve) => {
-                    const unixTime = Math.floor(new Date(post.scheduledDate).getTime() / 1000);
-                    
-                    // إذا كان البوست يحتوي على صورة
-                    if (post.payload.mediaFile) {
-                        const formData = new FormData();
-                        formData.append('source', post.payload.mediaFile);
-                        formData.append('message', post.payload.text);
-                        formData.append('published', 'false'); // لجعله مجدولاً وغير منشور فوراً
-                        formData.append('scheduled_publish_time', unixTime);
-                        formData.append('access_token', page.accessToken);
-
-                        // استخدام Fetch API للتعامل مع رفع الملفات بشكل أفضل من FB.api
-                        fetch(`https://graph.facebook.com/v20.0/${page.id}/photos`, {
-                            method: 'POST',
-                            body: formData
-                        })
-                        .then(res => res.json())
-                        .then(response => {
-                            if (response.error) resolve({ error: response.error });
-                            // فيسبوك يرجع post_id للصور المجدولة
-                            else resolve({ id: response.post_id || response.id });
-                        })
-                        .catch(err => resolve({ error: { message: err.message || "فشل رفع الصورة" } }));
-                    } 
-                    // إذا كان البوست نص/رابط فقط
-                    else {
-                        const payload = {
-                            message: post.payload.text,
-                            published: false,
-                            scheduled_publish_time: unixTime,
-                            access_token: page.accessToken
-                        };
-                        if (post.payload.link) payload.link = post.payload.link;
-
-                        window.FB.api(`/${page.id}/feed`, 'POST', payload, function (response) {
-                            if (!response || response.error) resolve({ error: response.error });
-                            else resolve({ id: response.id });
-                        });
-                    }
-                });
-            }
-        };
-
-        // ==========================================
-        // REUSABLE COMPONENTS
-        // ==========================================
-        function StatusBadge({ status }) {
-            const styles = {
-                pending: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-400',
-                scheduled: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-400',
-                published: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-400',
-                failed: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-400',
-                cancelled: 'bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
-            };
-            return <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${styles[status]}`}>{status}</span>;
-        }
-
-        function ConfirmModal({ isOpen, title, message, onConfirm, onCancel }) {
-            if (!isOpen) return null;
-            return (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl border border-gray-200 dark:border-gray-700">
-                        <h3 className="text-xl font-bold mb-2 dark:text-white">{title}</h3>
-                        <p className="text-gray-600 dark:text-gray-300 mb-6">{message}</p>
-                        <div className="flex justify-end gap-3">
-                            <button onClick={onCancel} className="px-4 py-2 rounded-xl text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 font-medium">Cancel</button>
-                            <button onClick={onConfirm} className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium">Confirm</button>
+            <!-- Dashboard View -->
+            <div id="view-dashboard" class="view-section active space-y-6">
+                <!-- Stats Cards -->
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+                        <div class="flex justify-between items-start mb-2">
+                            <p class="text-sm font-medium text-slate-500">إجمالي الطلاب</p>
+                            <div class="bg-indigo-100 text-indigo-600 p-2 rounded-lg"><i class="fa-solid fa-users"></i></div>
                         </div>
+                        <h3 class="text-2xl font-bold text-slate-800" id="stat-students">0</h3>
                     </div>
-                </div>
-            );
-        }
-
-        function Toast({ message, type, onClose }) {
-            if (!message) return null;
-            const colors = type === 'error' ? 'bg-red-100 border-red-500 text-red-800' : 'bg-green-100 border-green-500 text-green-800';
-            const icon = type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle';
-            return (
-                <div className={`fixed bottom-6 right-6 flex items-center gap-3 px-4 py-3 rounded-xl border-l-4 shadow-lg z-50 ${colors}`}>
-                    <i className={`fas ${icon} text-lg`}></i><p className="font-medium">{message}</p>
-                    <button onClick={onClose} className="ml-4 opacity-70 hover:opacity-100"><i className="fas fa-times"></i></button>
-                </div>
-            );
-        }
-
-        // ==========================================
-        // MAIN VIEWS
-        // ==========================================
-        function Dashboard({ posts }) {
-            const stats = useMemo(() => ({
-                total: posts.length,
-                scheduled: posts.filter(p => p.status === 'scheduled').length,
-                published: posts.filter(p => p.status === 'published').length,
-                pending: posts.filter(p => p.status === 'pending').length,
-                failed: posts.filter(p => p.status === 'failed').length,
-            }), [posts]);
-
-            const cards = [
-                { label: 'Total Posts', value: stats.total, icon: 'fa-file-alt', color: 'text-blue-500', bg: 'bg-blue-100 dark:bg-blue-900/30' },
-                { label: 'Scheduled (API)', value: stats.scheduled, icon: 'fa-check-circle', color: 'text-green-500', bg: 'bg-green-100 dark:bg-green-900/30' },
-                { label: 'Pending Processor', value: stats.pending, icon: 'fa-clock', color: 'text-yellow-500', bg: 'bg-yellow-100 dark:bg-yellow-900/30' },
-                { label: 'Failed', value: stats.failed, icon: 'fa-times-circle', color: 'text-red-500', bg: 'bg-red-100 dark:bg-red-900/30' },
-            ];
-
-            return (
-                <div className="space-y-6 max-w-6xl mx-auto animate-fade-in">
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                        {cards.map((card, i) => (
-                            <div key={i} className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm flex items-center gap-4">
-                                <div className={`p-4 rounded-xl ${card.bg} ${card.color}`}><i className={`fas ${card.icon} text-2xl`}></i></div>
-                                <div><p className="text-gray-500 dark:text-gray-400 text-sm font-medium">{card.label}</p><h4 className="text-2xl font-bold dark:text-white">{card.value}</h4></div>
-                            </div>
-                        ))}
-                    </div>
-
-                    <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm p-6">
-                        <h3 className="text-lg font-semibold mb-4 dark:text-white">Recent Activity</h3>
-                        <div className="space-y-3">
-                            {posts.slice(0, 5).map(post => (
-                                <div key={post.id} className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-100 dark:border-gray-700">
-                                    <div className="flex flex-col">
-                                        <span className="font-medium text-sm truncate max-w-[200px] sm:max-w-md dark:text-gray-200">{post.payload.text || 'Media Post'}</span>
-                                        <span className="text-xs text-gray-500"><i className="far fa-calendar-alt mr-1"></i>{new Date(post.scheduledDate).toLocaleString()}</span>
-                                    </div>
-                                    <StatusBadge status={post.status} />
-                                </div>
-                            ))}
-                            {posts.length === 0 && <p className="text-gray-500 text-sm text-center py-6">No posts scheduled yet.</p>}
+                    <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+                        <div class="flex justify-between items-start mb-2">
+                            <p class="text-sm font-medium text-slate-500">المجموعات</p>
+                            <div class="bg-blue-100 text-blue-600 p-2 rounded-lg"><i class="fa-solid fa-layer-group"></i></div>
                         </div>
+                        <h3 class="text-2xl font-bold text-slate-800" id="stat-groups">0</h3>
+                    </div>
+                    <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+                        <div class="flex justify-between items-start mb-2">
+                            <p class="text-sm font-medium text-slate-500">المُحصّل (الشهر الحالي)</p>
+                            <div class="bg-emerald-100 text-emerald-600 p-2 rounded-lg"><i class="fa-solid fa-money-bill-wave"></i></div>
+                        </div>
+                        <h3 class="text-2xl font-bold text-emerald-600" id="stat-collected">0 ج.م</h3>
+                        <p class="text-xs text-slate-400 mt-1" id="stat-expected">من أصل 0 ج.م</p>
+                    </div>
+                    <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+                        <div class="flex justify-between items-start mb-2">
+                            <p class="text-sm font-medium text-slate-500">المتأخرات</p>
+                            <div class="bg-rose-100 text-rose-600 p-2 rounded-lg"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                        </div>
+                        <h3 class="text-2xl font-bold text-rose-600" id="stat-arrears">0 ج.م</h3>
                     </div>
                 </div>
-            );
-        }
 
-        function Scheduler({ pages, settings, setPosts, addLog }) {
-            const [selectedPage, setSelectedPage] = useState(settings.defaultPageId || pages[0]?.id || '');
-            const [payload, setPayload] = useState({ text: '', link: '', mediaFile: null, mediaPreview: null });
-            const [startDate, setStartDate] = useState('');
-            const [endDate, setEndDate] = useState('');
-            const [times, setTimes] = useState(settings.defaultPostingTimes.length ? settings.defaultPostingTimes : ['09:00']);
-            
-            const [generatedPreview, setGeneratedPreview] = useState([]);
-            const [isProcessing, setIsProcessing] = useState(false);
-            const [progress, setProgress] = useState({ current: 0, total: 0 });
-            const [toastMsg, setToastMsg] = useState(null);
-
-            const showToast = (msg, type='error') => { setToastMsg({ message: msg, type }); setTimeout(() => setToastMsg(null), 4000); };
-
-            const handleGenerate = () => {
-                if (!selectedPage || (!payload.text && !payload.mediaFile) || !startDate || !endDate || times.length === 0) 
-                    return showToast("يرجى تعبئة الحقول المطلوبة (الصفحة، النص أو الصورة، والتاريخ).", "error");
+                <!-- Charts -->
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 lg:col-span-2">
+                        <h3 class="text-lg font-bold mb-4">الإيرادات آخر 6 أشهر</h3>
+                        <div class="h-64 relative"><canvas id="revenueChart"></canvas></div>
+                    </div>
+                    <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+                        <h3 class="text-lg font-bold mb-4">توزيع الطلاب</h3>
+                        <div class="h-64 relative flex justify-center"><canvas id="studentsChart"></canvas></div>
+                    </div>
+                </div>
                 
-                const start = new Date(startDate); const end = new Date(endDate);
-                if (end < start) return showToast("End date cannot be before start date.", "error");
+                <!-- Quick Actions -->
+                <div class="bg-primary/5 rounded-2xl p-5 border border-primary/10">
+                    <h3 class="text-lg font-bold mb-4 text-primary">إجراءات سريعة</h3>
+                    <div class="flex gap-3 flex-wrap">
+                        <button onclick="app.ui.modals.student.open()" class="bg-white hover:bg-slate-50 text-primary border border-primary/20 px-4 py-2 rounded-xl text-sm font-semibold transition-colors shadow-sm">
+                            <i class="fa-solid fa-user-plus ml-1"></i> إضافة طالب
+                        </button>
+                        <button onclick="app.ui.navigate('payments')" class="bg-primary hover:bg-secondary text-white px-4 py-2 rounded-xl text-sm font-semibold transition-colors shadow-sm shadow-primary/30">
+                            <i class="fa-solid fa-receipt ml-1"></i> تسجيل مدفوعات
+                        </button>
+                    </div>
+                </div>
+            </div>
 
-                const preview = []; let curr = new Date(start);
-                while (curr <= end) {
-                    for (const timeStr of times) {
-                        const [hours, minutes] = timeStr.split(':').map(Number);
-                        const schedDate = new Date(curr); schedDate.setHours(hours, minutes, 0, 0);
-                        if (schedDate.getTime() > new Date().getTime()) {
-                            preview.push({ id: generateId(), pageId: selectedPage, payload: { ...payload }, scheduledDate: schedDate.toISOString(), status: 'pending', createdAt: new Date().toISOString() });
-                        }
-                    }
-                    curr.setDate(curr.getDate() + 1);
-                }
-                if (preview.length === 0) return showToast("No valid future dates generated.", "error");
-                setGeneratedPreview(preview);
-                addLog('info', 'Schedule Generated', `Generated ${preview.length} datetimes.`);
-            };
-
-            const processQueue = async (queue) => {
-                setIsProcessing(true); setProgress({ current: 0, total: queue.length });
-                const page = pages.find(p => p.id === selectedPage);
+            <div id="view-groups" class="view-section space-y-6">
+                <div class="flex justify-between items-center">
+                    <div class="relative w-full max-w-md">
+                        <i class="fa-solid fa-search absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                        <input type="text" id="search-student" placeholder="ابحث عن طالب أو مجموعة..." class="w-full pl-4 pr-10 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent bg-white shadow-sm" onkeyup="app.ui.renderGroupsList()">
+                    </div>
+                    <button onclick="app.ui.modals.group.open()" class="mr-4 bg-slate-800 hover:bg-slate-700 text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors shadow-sm whitespace-nowrap flex items-center gap-2">
+                        <i class="fa-solid fa-plus"></i> <span class="hidden sm:inline">مجموعة جديدة</span>
+                    </button>
+                </div>
                 
-                // إضافة المجدولات للقائمة مع إزالة ملف الصورة لتجنب مشاكل التخزين المحلي (LocalStorage)
-                const queueForState = queue.map(q => ({
-                    ...q, 
-                    payload: { ...q.payload, mediaFile: null } // لا نخزن الملفات في الذاكرة المحلية
-                }));
-                setPosts(prev => [...queueForState, ...prev]); 
-                setGeneratedPreview([]); 
-                let successCount = 0; let failCount = 0;
+                <div id="groups-list" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                    <!-- Groups populated by JS -->
+                </div>
+            </div>
 
-                for (let i = 0; i < queue.length; i++) {
-                    const currentPost = queue[i]; setProgress(p => ({ ...p, current: i + 1 }));
-                    const response = await GraphAPI.schedulePost(page, currentPost);
-                    setPosts(prev => prev.map(p => {
-                        if (p.id === currentPost.id) {
-                            if (response.error) {
-                                failCount++; addLog('error', 'Graph API Error', `Post ${p.id} failed: ${response.error.message}`);
-                                return { ...p, status: 'failed', errorMsg: response.error.message };
-                            } else {
-                                successCount++; addLog('success', 'Post Scheduled', `FB ID: ${response.id}`);
-                                return { ...p, status: 'scheduled', fbPostId: response.id };
-                            }
-                        }
-                        return p;
-                    }));
-                }
-                setIsProcessing(false);
-                addLog('info', 'Bulk Complete', `Processed ${queue.length}. Success: ${successCount}, Failed: ${failCount}.`);
-                showToast(`Scheduling complete! ${successCount} succeeded, ${failCount} failed.`, failCount > 0 ? 'error' : 'success');
-            };
-
-            const handleImageUpload = (e) => {
-                const file = e.target.files[0];
-                if (file) {
-                    setPayload({
-                        ...payload,
-                        mediaFile: file,
-                        mediaPreview: URL.createObjectURL(file)
-                    });
-                }
-            };
-
-            const removeImage = () => {
-                setPayload({ ...payload, mediaFile: null, mediaPreview: null });
-            };
-
-            return (
-                <div className="max-w-6xl mx-auto flex flex-col xl:flex-row gap-6 animate-fade-in">
-                    {toastMsg && <Toast message={toastMsg.message} type={toastMsg.type} onClose={() => setToastMsg(null)} />}
-                    <div className="flex-1 space-y-6">
-                        <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700">
-                            <h3 className="text-lg font-bold mb-4 dark:text-white"><i className="fab fa-facebook text-fb mr-2"></i> 1. Select Target Page</h3>
-                            <select value={selectedPage} onChange={e => setSelectedPage(e.target.value)} className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none">
-                                <option value="">Select a Facebook Page...</option>
-                                {pages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            <div id="view-payments" class="view-section space-y-4">
+                <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-wrap gap-4 items-end justify-between">
+                    <div class="flex flex-wrap gap-4 w-full md:w-auto">
+                        <div class="flex-1 min-w-[140px]">
+                            <label class="block text-xs font-semibold text-slate-500 mb-1">الشهر</label>
+                            <input type="month" id="payment-month-picker" class="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:ring-2 focus:ring-primary outline-none text-sm" onchange="app.ui.renderPaymentsTable()">
+                        </div>
+                        <div class="flex-1 min-w-[140px]">
+                            <label class="block text-xs font-semibold text-slate-500 mb-1">المجموعة</label>
+                            <select id="payment-group-filter" class="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:ring-2 focus:ring-primary outline-none text-sm" onchange="app.ui.renderPaymentsTable()">
+                                <option value="all">الكل</option>
+                                <!-- Groups injected by JS -->
                             </select>
                         </div>
-                        <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 space-y-5">
-                            <h3 className="text-lg font-bold dark:text-white"><i className="fas fa-edit text-blue-500 mr-2"></i> 2. Content Setup</h3>
-                            <div>
-                                <label className="block text-sm font-semibold mb-2 dark:text-gray-300">Caption / Text</label>
-                                <textarea rows="4" className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none resize-none" value={payload.text} onChange={e => setPayload({...payload, text: e.target.value})} placeholder="اكتب محتوى المنشور هنا..." />
-                            </div>
-                            
-                            {/* منطقة رفع الصورة */}
-                            <div>
-                                <label className="block text-sm font-semibold mb-2 dark:text-gray-300">Image Upload (Optional)</label>
-                                {!payload.mediaPreview ? (
-                                    <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-xl cursor-pointer bg-gray-50 dark:hover:bg-gray-800 dark:bg-gray-900 hover:bg-gray-100 dark:border-gray-600 dark:hover:border-gray-500">
-                                        <div className="flex flex-col items-center justify-center pt-5 pb-6 text-gray-500 dark:text-gray-400">
-                                            <i className="fas fa-cloud-upload-alt text-2xl mb-2"></i>
-                                            <p className="text-sm font-semibold">اضغط لرفع صورة</p>
-                                        </div>
-                                        <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
-                                    </label>
-                                ) : (
-                                    <div className="relative w-full h-48 rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700">
-                                        <img src={payload.mediaPreview} alt="Preview" className="w-full h-full object-cover" />
-                                        <button onClick={removeImage} className="absolute top-2 right-2 bg-red-500 text-white p-2 rounded-lg hover:bg-red-600 shadow-lg">
-                                            <i className="fas fa-trash-alt"></i>
-                                        </button>
-                                    </div>
-                                )}
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-sm font-semibold mb-2 dark:text-gray-300">Link URL (Optional)</label>
-                                    <input type="url" className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none" value={payload.link} onChange={e => setPayload({...payload, link: e.target.value})} />
-                                </div>
-                            </div>
-                        </div>
-                        <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 space-y-5">
-                            <h3 className="text-lg font-bold dark:text-white"><i className="fas fa-clock text-green-500 mr-2"></i> 3. Bulk Schedule Timing</h3>
-                            <div className="grid grid-cols-2 gap-4">
-                                <div><label className="block text-sm font-semibold mb-2 dark:text-gray-300">Start Date *</label><input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="w-full bg-gray-50 dark:bg-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none" /></div>
-                                <div><label className="block text-sm font-semibold mb-2 dark:text-gray-300">End Date *</label><input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="w-full bg-gray-50 dark:bg-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none" /></div>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-semibold mb-3 dark:text-gray-300">Posting Times (Daily) *</label>
-                                <div className="flex flex-wrap gap-3">
-                                    {times.map((t, idx) => (
-                                        <div key={idx} className="bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 px-4 py-2 rounded-xl flex items-center gap-3 font-bold border border-blue-100 dark:border-blue-800">
-                                            {t} <button onClick={() => setTimes(times.filter((_, i) => i !== idx))} className="hover:text-red-500"><i className="fas fa-times-circle"></i></button>
-                                        </div>
-                                    ))}
-                                    <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-900 rounded-xl border border-gray-300 dark:border-gray-600 p-1">
-                                        <input type="time" id="newTime" className="bg-transparent px-2 outline-none dark:text-white" />
-                                        <button onClick={() => {const v = document.getElementById('newTime').value; if(v && !times.includes(v)) setTimes([...times, v].sort());}} className="p-2 bg-gray-200 dark:bg-gray-700 rounded-lg"><i className="fas fa-plus"></i></button>
-                                    </div>
-                                </div>
-                            </div>
-                            <button onClick={handleGenerate} className="w-full bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 font-bold py-4 rounded-xl">Generate Preview</button>
+                        <div class="flex-1 min-w-[140px]">
+                            <label class="block text-xs font-semibold text-slate-500 mb-1">حالة السداد</label>
+                            <select id="payment-status-filter" class="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:ring-2 focus:ring-primary outline-none text-sm" onchange="app.ui.renderPaymentsTable()">
+                                <option value="all">جميع الحالات</option>
+                                <option value="unpaid_only">المتأخرين فقط (غير مدفوع / جزئي)</option>
+                                <option value="paid">مدفوع بالكامل</option>
+                                <option value="partial">مدفوع جزئياً</option>
+                                <option value="unpaid">غير مدفوع</option>
+                            </select>
                         </div>
                     </div>
-
-                    <div className="flex-1 lg:max-w-md xl:max-w-lg flex flex-col">
-                        <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm flex-1 flex flex-col overflow-hidden sticky top-20 max-h-[calc(100vh-100px)]">
-                            <div className="p-6 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-900/50">
-                                <h3 className="font-bold dark:text-white">Queue Preview</h3>
-                                <span className="bg-fb text-white text-xs font-bold px-3 py-1.5 rounded-full">{generatedPreview.length} items</span>
-                            </div>
-                            <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                                {generatedPreview.map((item, idx) => (
-                                    <div key={item.id} className="flex items-center justify-between p-4 rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30">
-                                        <div className="flex items-center gap-4">
-                                            <span className="text-gray-400 font-mono font-bold w-6">{idx + 1}.</span>
-                                            <div><p className="font-bold dark:text-gray-200">{new Date(item.scheduledDate).toLocaleDateString()}</p><p className="text-xs text-gray-500 font-mono mt-1">{new Date(item.scheduledDate).toLocaleTimeString()}</p></div>
-                                        </div>
-                                        <button onClick={() => setGeneratedPreview(prev => prev.filter(p => p.id !== item.id))} className="text-gray-400 hover:text-red-500"><i className="fas fa-trash-alt"></i></button>
-                                    </div>
-                                ))}
-                            </div>
-                            {generatedPreview.length > 0 && (
-                                <div className="p-5 border-t border-gray-100 dark:border-gray-700">
-                                    {isProcessing ? (
-                                        <div className="space-y-3">
-                                            <div className="flex justify-between text-sm font-bold dark:text-gray-300"><span>Processing...</span><span>{progress.current} / {progress.total}</span></div>
-                                            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3"><div className="bg-fb h-3 rounded-full transition-all" style={{ width: `${(progress.current / progress.total) * 100}%` }}></div></div>
-                                        </div>
-                                    ) : (
-                                        <button onClick={() => processQueue(generatedPreview)} className="w-full bg-fb text-white font-bold py-4 rounded-xl">Schedule All via API</button>
-                                    )}
-                                </div>
-                            )}
-                        </div>
+                    
+                    <div class="flex items-center gap-4 text-sm font-semibold bg-slate-50 p-3 rounded-xl border border-slate-100 w-full md:w-auto">
+                        <div class="text-emerald-600">محصل: <span id="payment-total-paid">0</span> ج</div>
+                        <div class="w-px h-4 bg-slate-300"></div>
+                        <div class="text-rose-600">باقي: <span id="payment-total-unpaid">0</span> ج</div>
+                        <div class="w-px h-4 bg-slate-300"></div>
+                        <button onclick="app.utils.exportPaymentsCSV()" class="text-primary hover:text-secondary flex items-center gap-1.5 text-xs bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm" title="تصدير كملف CSV / Excel">
+                            <i class="fa-solid fa-file-excel text-emerald-600"></i> تصدير CSV
+                        </button>
                     </div>
                 </div>
-            );
-        }
 
-        function PostList({ posts, setPosts, pages, addLog }) {
-            const [searchTerm, setSearchTerm] = useState('');
-            const filteredPosts = posts.filter(p => p.payload.text.toLowerCase().includes(searchTerm.toLowerCase())).sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime());
-
-            return (
-                <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col h-full animate-fade-in">
-                    <div className="p-5 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-900/20">
-                        <input type="text" placeholder="Search..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="px-4 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl outline-none dark:text-white" />
-                    </div>
-                    <div className="flex-1 overflow-auto">
-                        <table className="w-full text-left text-sm whitespace-nowrap">
-                            <thead className="bg-gray-100 dark:bg-gray-900/80 text-gray-600 dark:text-gray-400 sticky top-0">
-                                <tr><th className="p-4 font-bold">Content</th><th className="p-4 font-bold">Page</th><th className="p-4 font-bold">Scheduled Time</th><th className="p-4 font-bold">Status</th></tr>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                    <div class="overflow-x-auto no-scrollbar">
+                        <table class="w-full text-right border-collapse">
+                            <thead>
+                                <tr class="bg-slate-50 border-b border-slate-100 text-slate-500 text-sm">
+                                    <th class="p-4 font-semibold">الطالب</th>
+                                    <th class="p-4 font-semibold">المجموعة</th>
+                                    <th class="p-4 font-semibold">المطلوب</th>
+                                    <th class="p-4 font-semibold text-center">حالة الدفع</th>
+                                </tr>
                             </thead>
-                            <tbody className="divide-y divide-gray-100 dark:divide-gray-700/50">
-                                {filteredPosts.map(post => (
-                                    <tr key={post.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/80">
-                                        <td className="p-4"><div className="max-w-xs truncate dark:text-gray-200">{post.payload.text || '(Media)'}</div>{post.errorMsg && <div className="text-xs text-red-500 truncate max-w-xs mt-1">{post.errorMsg}</div>}</td>
-                                        <td className="p-4 text-gray-500 dark:text-gray-400">{pages.find(p => p.id === post.pageId)?.name || 'Unknown'}</td>
-                                        <td className="p-4 font-mono text-xs dark:text-gray-300">{new Date(post.scheduledDate).toLocaleString()}</td>
-                                        <td className="p-4"><StatusBadge status={post.status} /></td>
-                                    </tr>
-                                ))}
+                            <tbody id="payments-tbody" class="divide-y divide-slate-100">
+                                <!-- Payment rows injected by JS -->
                             </tbody>
                         </table>
                     </div>
                 </div>
-            );
-        }
+            </div>
 
-        function LoginScreen({ onLogin, theme, toggleTheme }) {
-            const [loading, setLoading] = useState(false);
-            const [appId, setAppId] = useState(() => DB.get('fb_app_id', ''));
-            const [error, setError] = useState('');
-            
-            useEffect(() => { if (appId.trim()) GraphAPI.init(appId.trim()).catch(e => setError(e.message)); }, [appId]);
-
-            const handleLogin = () => {
-                if (!appId.trim()) return setError('يرجى إدخال Facebook App ID الخاص بك.');
-                if (!window.FB) return setError('جاري تجهيز الاتصال، تأكد من إدخال App ID صحيح وأنك ألغيت مانع الإعلانات.');
-                setLoading(true); setError(''); DB.set('fb_app_id', appId.trim());
-
-                GraphAPI.login().then(async (authResponse) => {
-                    try {
-                        const userInfo = await GraphAPI.getUserInfo();
-                        const userPages = await GraphAPI.getPages();
-                        onLogin({ user: { id: userInfo.id, name: userInfo.name, picture: userInfo.picture?.data?.url }, pages: userPages });
-                    } catch (err) { setError('حدث خطأ أثناء جلب الصفحات.'); setLoading(false); }
-                }).catch(err => { setError(err.message); setLoading(false); });
-            };
-
-            return (
-                <div className={`min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 transition-colors ${theme}`}>
-                    <div className="max-w-md w-full p-10 bg-white dark:bg-gray-800 rounded-3xl shadow-2xl border border-gray-100 dark:border-gray-700 text-center">
-                        <div className="w-20 h-20 bg-gradient-to-tr from-fb to-blue-500 rounded-2xl flex items-center justify-center mx-auto mb-6"><i className="fab fa-facebook-f text-4xl text-white"></i></div>
-                        <h1 className="text-2xl font-extrabold text-gray-900 dark:text-white mb-2">Facebook Scheduler</h1>
-                        
-                        <div className="mb-6 mt-6 text-left">
-                            <label className="block text-sm font-bold mb-2 dark:text-gray-300">Facebook App ID</label>
-                            <input type="text" value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="مثال: 123456789012345" className="w-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 outline-none focus:border-fb" />
-                            {error && <p className="text-red-500 text-xs mt-2 font-medium">{error}</p>}
-                        </div>
-
-                        <button onClick={handleLogin} disabled={loading} className="w-full flex items-center justify-center gap-3 bg-fb hover:bg-fb-hover text-white py-4 px-6 rounded-xl font-bold shadow-xl">
-                            {loading ? <i className="fas fa-spinner fa-spin"></i> : <i className="fab fa-facebook"></i>}
-                            {loading ? 'جاري الاتصال...' : 'تسجيل الدخول'}
-                        </button>
+            <div id="view-schedule" class="view-section space-y-4 h-full flex flex-col">
+                <div class="flex justify-between items-center">
+                    <p class="text-sm text-slate-500">اضغط على أي خانة فارغة لإضافة حصة</p>
+                </div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex-1 relative">
+                    <div class="overflow-auto h-full w-full no-scrollbar relative" id="schedule-container">
+                        <!-- Grid injected by JS -->
                     </div>
                 </div>
-            );
-        }
+            </div>
 
-        function Sidebar({ view, setView, user, onLogout }) {
-            const nav = [{ id: 'dashboard', icon: 'fa-chart-pie', label: 'Dashboard' }, { id: 'scheduler', icon: 'fa-plus-square', label: 'New Schedule' }, { id: 'posts', icon: 'fa-tasks', label: 'Queue Manager' }];
-            return (
-                <aside className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col hidden md:flex">
-                    <div className="p-6 flex items-center gap-3"><div className="bg-fb w-8 h-8 rounded flex items-center justify-center"><i className="fab fa-facebook-f text-white"></i></div><span className="font-bold text-lg dark:text-white">BulkSched</span></div>
-                    <nav className="flex-1 px-4 py-2 space-y-1">{nav.map(i => <button key={i.id} onClick={() => setView(i.id)} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm ${view === i.id ? 'bg-blue-50 dark:bg-fb text-fb dark:text-white' : 'text-gray-600 dark:text-gray-400'}`}><i className={`fas ${i.icon}`}></i> {i.label}</button>)}</nav>
-                    <div className="p-4 border-t border-gray-100 dark:border-gray-700"><div className="flex items-center gap-3 p-2 bg-gray-50 dark:bg-gray-900 rounded-xl"><img src={user.picture} className="w-8 h-8 rounded-lg" /><div className="flex-1"><p className="text-xs font-bold dark:text-white">{user.name}</p></div><button onClick={onLogout} className="text-red-500"><i className="fas fa-sign-out-alt"></i></button></div></div>
-                </aside>
-            );
-        }
+            <div id="view-analytics" class="view-section space-y-6">
+                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+                        <h3 class="text-lg font-bold mb-4">إيرادات المجموعات (الشهر الحالي)</h3>
+                        <div class="h-72 relative"><canvas id="groupRevenueChart"></canvas></div>
+                    </div>
+                    <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+                        <h3 class="text-lg font-bold mb-4">معدل التحصيل (%)</h3>
+                        <div class="h-72 relative flex justify-center"><canvas id="collectionRateChart"></canvas></div>
+                    </div>
+                 </div>
+            </div>
 
-        function App() {
-            const [theme, setTheme] = useState('light');
-            const [user, setUser] = useState(null);
-            const [view, setView] = useState('dashboard');
-            const [pages, setPages] = useState([]);
-            const [posts, setPosts] = useState(() => DB.get('posts', []));
-            const [logs, setLogs] = useState([]);
-            const settings = { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, defaultPostingTimes: ['09:00', '15:00', '21:00'] };
+            <div id="view-settings" class="view-section max-w-2xl mx-auto space-y-6">
+                
+                <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+                    <h3 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                        <i class="fa-solid fa-database text-primary"></i> النسخ الاحتياطي (مهم جداً)
+                    </h3>
+                    <p class="text-sm text-slate-500 mb-6 leading-relaxed">
+                        نظراً لأن التطبيق يعتمد على تخزين متصفحك (بدون سيرفر)، يجب عليك أخذ نسخة احتياطية دورياً. إذا قمت بحذف بيانات المتصفح أو تغيير الجهاز، ستحتاج هذا الملف لاستعادة بياناتك.
+                    </p>
+                    
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <button onclick="app.utils.exportJSON()" class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 p-4 rounded-xl font-bold flex flex-col items-center justify-center gap-2 transition-colors border border-indigo-100">
+                            <i class="fa-solid fa-download text-2xl"></i>
+                            تنزيل نسخة (JSON)
+                        </button>
 
-            useEffect(() => { DB.set('posts', posts); }, [posts]);
-            useEffect(() => { if (theme === 'dark') document.documentElement.classList.add('dark'); else document.documentElement.classList.remove('dark'); }, [theme]);
-
-            const addLog = useCallback((level, action, details) => { console.log(`[${level}] ${action}: ${details}`); }, []);
-
-            const login = (authData) => { setUser(authData.user); setPages(authData.pages); };
-            const logout = () => { setUser(null); setPages([]); if (window.FB) window.FB.logout(); };
-
-            if (!user) return <LoginScreen onLogin={login} theme={theme} toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} />;
-
-            return (
-                <div className={`min-h-screen flex transition-colors duration-200 ${theme}`}>
-                    <Sidebar view={view} setView={setView} user={user} onLogout={logout} />
-                    <main className="flex-1 flex flex-col h-screen overflow-hidden bg-gray-50 dark:bg-gray-900 relative">
-                        <header className="h-20 bg-white/80 dark:bg-gray-900/80 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between px-8"><h2 className="text-2xl font-extrabold dark:text-white capitalize">{view}</h2></header>
-                        <div className="flex-1 overflow-y-auto p-6 md:p-8">
-                            {view === 'dashboard' && <Dashboard posts={posts} />}
-                            {view === 'scheduler' && <Scheduler pages={pages} settings={settings} setPosts={setPosts} addLog={addLog} />}
-                            {view === 'posts' && <PostList posts={posts} setPosts={setPosts} pages={pages} addLog={addLog} />}
-                        </div>
-                    </main>
+                        <button onclick="app.utils.exportPaymentsCSV()" class="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 p-4 rounded-xl font-bold flex flex-col items-center justify-center gap-2 transition-colors border border-emerald-100">
+                            <i class="fa-solid fa-file-csv text-2xl"></i>
+                            تصدير تقرير (CSV)
+                        </button>
+                        
+                        <label class="bg-slate-50 hover:bg-slate-100 text-slate-700 p-4 rounded-xl font-bold flex flex-col items-center justify-center gap-2 transition-colors border border-slate-200 cursor-pointer">
+                            <i class="fa-solid fa-upload text-2xl"></i>
+                            استعادة نسخة (JSON)
+                            <input type="file" accept=".json" class="hidden" id="import-json-input" onchange="app.utils.importJSON(event)">
+                        </label>
+                    </div>
                 </div>
-            );
-        }
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+                <div class="bg-white rounded-2xl p-6 shadow-sm border border-rose-100">
+                    <h3 class="text-lg font-bold text-rose-600 mb-2 flex items-center gap-2">
+                        <i class="fa-solid fa-triangle-exclamation"></i> منطقة الخطر
+                    </h3>
+                    <p class="text-sm text-slate-500 mb-4">مسح جميع البيانات سيعيد التطبيق لحالته الأولى. لا يمكن التراجع عن هذه الخطوة.</p>
+                    <button onclick="app.utils.clearData()" class="bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white px-4 py-2 rounded-lg font-semibold transition-colors border border-rose-200">
+                        مسح جميع البيانات
+                    </button>
+                </div>
+
+            </div>
+
+        </div>
+    </main>
+
+    <nav class="md:hidden fixed bottom-0 w-full bg-white border-t border-slate-200 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-20 pb-safe">
+        <ul class="flex justify-around items-center p-2 nav-menu-mobile">
+            <!-- Mobile nav generated by JS -->
+        </ul>
+    </nav>
+
+    <!-- Custom Modal Container -->
+    <div id="modal-container" class="fixed inset-0 z-50 flex items-center justify-center modal-overlay p-4 bg-slate-900/40 backdrop-blur-sm">
+        <div class="bg-white rounded-2xl shadow-xl w-full max-w-md modal-content overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                <h3 id="modal-title" class="text-lg font-bold text-slate-800">عنوان</h3>
+                <button onclick="app.ui.modals.close()" class="text-slate-400 hover:text-rose-500 transition-colors w-8 h-8 flex justify-center items-center rounded-lg hover:bg-rose-50">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+            <div id="modal-body" class="p-6 overflow-y-auto custom-scrollbar">
+                <!-- Content injected dynamically -->
+            </div>
+            <div id="modal-footer" class="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+                <!-- Buttons injected dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const app = {
+            state: {
+                groups: [],
+                students: [],
+                payments: {}, // format: "YYYY-MM": { studentId: { status, amount } }
+                schedule: [],
+                currentView: 'dashboard'
+            },
+            charts: {},
+            
+            navItems: [
+                { id: 'dashboard', label: 'الرئيسية', icon: 'fa-solid fa-chart-pie' },
+                { id: 'schedule', label: 'الجدول', icon: 'fa-regular fa-calendar-days' },
+                { id: 'groups', label: 'المجموعات', icon: 'fa-solid fa-user-group' },
+                { id: 'payments', label: 'المدفوعات', icon: 'fa-solid fa-money-bill-transfer' },
+                { id: 'analytics', label: 'التحليلات', icon: 'fa-solid fa-chart-line' },
+                { id: 'settings', label: 'الإعدادات', icon: 'fa-solid fa-gear' }
+            ],
+
+            // Default Data setup based on prompt requirements
+            seedData: function() {
+                const groups = [
+                    { id: 'g1', name: '2 ب', defaultFee: 150, color: 'blue' },
+                    { id: 'g2', name: '3 ب', defaultFee: 150, color: 'indigo' },
+                    { id: 'g3', name: '4 ب', defaultFee: 200, color: 'violet' },
+                    { id: 'g4', name: '5 ب', defaultFee: 200, color: 'purple' },
+                    { id: 'g5', name: 'إعدادي أول', defaultFee: 250, color: 'emerald' },
+                    { id: 'g6', name: 'إعدادي ثاني', defaultFee: 250, color: 'teal' },
+                    { id: 'g7', name: 'إعدادي ثالث', defaultFee: 300, color: 'cyan' },
+                    { id: 'g8', name: 'جريد 2', defaultFee: 400, color: 'amber' },
+                    { id: 'g9', name: 'جريد 5', defaultFee: 500, color: 'orange' },
+                    { id: 'g10', name: 'برايفت', defaultFee: 0, color: 'rose' }
+                ];
+
+                const students = [];
+                let studentIdCounter = 1;
+                
+                const dummyNames = ["أحمد محمد", "محمود علي", "فاطمة حسن", "زينب إبراهيم", "عمر خالد", "ياسين طارق"];
+                groups.forEach(g => {
+                    const count = Math.floor(Math.random() * 3) + 1;
+                    for(let i=0; i<count; i++) {
+                        let fee = g.defaultFee;
+                        if(g.id === 'g10') fee = Math.floor(Math.random() * 4 + 3) * 100;
+                        students.push({
+                            id: 's' + studentIdCounter++,
+                            groupId: g.id,
+                            name: dummyNames[Math.floor(Math.random() * dummyNames.length)] + ' ' + studentIdCounter,
+                            monthlyFee: fee,
+                            phone: '010' + Math.floor(Math.random() * 90000000 + 10000000),
+                            notes: ''
+                        });
+                    }
+                });
+
+                const currentMonthStr = app.utils.getCurrentMonthStr();
+                const payments = {};
+                payments[currentMonthStr] = {};
+                
+                students.forEach((s) => {
+                    const rand = Math.random();
+                    let status = 'unpaid';
+                    if (rand > 0.6) status = 'paid';
+                    else if (rand > 0.4) status = 'partial';
+                    
+                    let amount = 0;
+                    if (status === 'paid') amount = s.monthlyFee;
+                    else if (status === 'partial') amount = Math.round(s.monthlyFee / 2);
+
+                    payments[currentMonthStr][s.id] = { status: status, amount: amount };
+                });
+
+                const schedule = [
+                    { id: 'sch1', day: 0, timeIndex: 4, groupId: 'g1' },
+                    { id: 'sch2', day: 1, timeIndex: 5, groupId: 'g5' },
+                    { id: 'sch3', day: 2, timeIndex: 6, groupId: 'g10', studentName: 'أحمد (برايفت)' }
+                ];
+
+                this.state.groups = groups;
+                this.state.students = students;
+                this.state.payments = payments;
+                this.state.schedule = schedule;
+                this.save();
+            },
+
+            init: function() {
+                this.charts = this.charts || {};
+                
+                // Set default month picker
+                const monthPicker = document.getElementById('payment-month-picker');
+                if (monthPicker) monthPicker.value = this.utils.getCurrentMonthStr();
+                
+                const badge = document.getElementById('current-month-badge');
+                if (badge) badge.innerText = this.utils.formatMonthYear(this.utils.getCurrentMonthStr());
+
+                // Load Data
+                const saved = localStorage.getItem('tutor_app_data');
+                if (saved) {
+                    try {
+                        this.state = JSON.parse(saved);
+                        if(!this.state.payments) this.state.payments = {};
+                        if(!this.state.schedule) this.state.schedule = [];
+                        if(!this.state.currentView) this.state.currentView = 'dashboard';
+                    } catch(e) { 
+                        console.error("Error loading data", e); 
+                        this.seedData();
+                    }
+                } else {
+                    this.seedData();
+                }
+
+                this.ui.buildNavigation();
+                this.ui.navigate(this.state.currentView || 'dashboard');
+            },
+
+            save: function() {
+                localStorage.setItem('tutor_app_data', JSON.stringify(this.state));
+            },
+
+            utils: {
+                generateId: () => 'id_' + Math.random().toString(36).substr(2, 9),
+                getCurrentMonthStr: () => {
+                    const d = new Date();
+                    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                },
+                formatMonthYear: (str) => {
+                    if(!str) return '';
+                    const [y, m] = str.split('-');
+                    const date = new Date(Number(y), Number(m) - 1);
+                    return date.toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' });
+                },
+                exportJSON: () => {
+                    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(app.state, null, 2));
+                    const downloadAnchorNode = document.createElement('a');
+                    downloadAnchorNode.setAttribute("href", dataStr);
+                    downloadAnchorNode.setAttribute("download", "tutor_backup_" + new Date().toISOString().slice(0,10) + ".json");
+                    document.body.appendChild(downloadAnchorNode);
+                    downloadAnchorNode.click();
+                    downloadAnchorNode.remove();
+                },
+                exportPaymentsCSV: () => {
+                    const month = document.getElementById('payment-month-picker') ? document.getElementById('payment-month-picker').value : app.utils.getCurrentMonthStr();
+                    const paymentsMonth = app.state.payments[month] || {};
+                    
+                    let csvContent = "\uFEFF"; // UTF-8 BOM for Arabic support in Excel
+                    csvContent += "اسم الطالب,المجموعة,الهاتف,الرسوم المطلوبة,المبلغ المسدد,حالة الدفع,الشهر\n";
+                    
+                    app.state.students.forEach(s => {
+                        const g = app.state.groups.find(group => group.id === s.groupId);
+                        const p = paymentsMonth[s.id] || { status: 'unpaid', amount: 0 };
+                        const statusArabic = p.status === 'paid' ? 'مدفوع' : (p.status === 'partial' ? 'مدفوع جزئياً' : 'غير مدفوع');
+                        
+                        csvContent += `"${s.name}","${g ? g.name : ''}","${s.phone || ''}",${s.monthlyFee},${p.amount || 0},"${statusArabic}","${month}"\n`;
+                    });
+
+                    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                    const link = document.createElement("a");
+                    link.href = URL.createObjectURL(blob);
+                    link.setAttribute("download", `تقرير_المدفوعات_${month}.csv`);
+                    document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                },
+                importJSON: (e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = function(evt) {
+                        try {
+                            const data = JSON.parse(evt.target.result);
+                            if(data && Array.isArray(data.groups) && Array.isArray(data.students)) {
+                                app.state = data;
+                                app.save();
+                                app.ui.modals.open("تم بنجاح", "<p class='text-emerald-600 font-bold'>تم استعادة البيانات بنجاح!</p>", `<button onclick="location.reload()" class="bg-primary text-white px-4 py-2 rounded-xl">تحديث الصفحة</button>`);
+                            } else {
+                                app.ui.modals.open("خطأ", "<p class='text-rose-500'>الملف المحدد غير صالح أو لا يحتوي على بنية البيانات المتوافقة.</p>", `<button onclick="app.ui.modals.close()" class="px-4 py-2 rounded-xl bg-slate-200">إغلاق</button>`);
+                            }
+                        } catch(err) { 
+                            app.ui.modals.open("خطأ", "<p class='text-rose-500'>حدث خطأ أثناء قراءة ملف النسخة الاحتياطية.</p>", `<button onclick="app.ui.modals.close()" class="px-4 py-2 rounded-xl bg-slate-200">إغلاق</button>`);
+                        }
+                    };
+                    reader.readAsText(file);
+                },
+                clearData: () => {
+                    app.ui.modals.confirm("مسح كل البيانات", "هل أنت متأكد أنك تريد مسح جميع البيانات؟ لا يمكن التراجع.", "نعم، امسح كل شيء", "danger", () => {
+                        localStorage.removeItem('tutor_app_data');
+                        location.reload();
+                    });
+                }
+            },
+
+            ui: {
+                buildNavigation: function() {
+                    const deskContainer = document.querySelector('.nav-menu');
+                    const mobContainer = document.querySelector('.nav-menu-mobile');
+                    if (!deskContainer || !mobContainer) return;
+                    deskContainer.innerHTML = '';
+                    mobContainer.innerHTML = '';
+
+                    app.navItems.forEach(item => {
+                        // Desktop Item
+                        const dBtn = document.createElement('button');
+                        dBtn.className = `w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-right ${app.state.currentView === item.id ? 'bg-primary/10 text-primary font-bold' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`;
+                        dBtn.innerHTML = `<i class="${item.icon} w-5 text-center ${app.state.currentView === item.id ? 'text-primary' : 'text-slate-400'}"></i> <span>${item.label}</span>`;
+                        dBtn.onclick = () => this.navigate(item.id);
+                        deskContainer.appendChild(dBtn);
+
+                        // Mobile Item
+                        const mBtn = document.createElement('button');
+                        mBtn.className = `flex flex-col items-center justify-center w-16 h-14 rounded-xl transition-all ${app.state.currentView === item.id ? 'text-primary' : 'text-slate-400'}`;
+                        mBtn.innerHTML = `<i class="${item.icon} text-xl mb-1 ${app.state.currentView === item.id ? '-translate-y-1 scale-110 drop-shadow-sm' : ''} transition-transform"></i> <span class="text-[10px] font-semibold">${item.label}</span>`;
+                        mBtn.onclick = () => this.navigate(item.id);
+                        mobContainer.appendChild(mBtn);
+                    });
+                },
+
+                navigate: function(viewId) {
+                    app.state.currentView = viewId;
+                    app.save();
+                    
+                    // Update UI titles
+                    const titleMap = app.navItems.reduce((acc, i) => ({...acc, [i.id]: i.label}), {});
+                    const titleEl = document.getElementById('page-title');
+                    if (titleEl) titleEl.innerText = titleMap[viewId] || 'الرئيسية';
+
+                    // Rebuild Nav active states
+                    this.buildNavigation();
+
+                    // Hide all, show active
+                    document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+                    const targetView = document.getElementById('view-' + viewId);
+                    if (targetView) targetView.classList.add('active');
+
+                    // Call specific render logic
+                    if(viewId === 'dashboard') this.renderDashboard();
+                    else if(viewId === 'groups') this.renderGroupsList();
+                    else if(viewId === 'payments') this.renderPaymentsTable();
+                    else if(viewId === 'schedule') this.renderSchedule();
+                    else if(viewId === 'analytics') this.renderAnalytics();
+                },
+
+                renderDashboard: function() {
+                    const studentsCount = app.state.students.length;
+                    const groupsCount = app.state.groups.length;
+                    
+                    let expectedRev = 0;
+                    app.state.students.forEach(s => expectedRev += Number(s.monthlyFee || 0));
+
+                    let collectedRev = 0;
+                    let arrears = 0;
+                    
+                    const currentMonth = app.utils.getCurrentMonthStr();
+                    const currentMonthPayments = app.state.payments[currentMonth] || {};
+
+                    app.state.students.forEach(s => {
+                        const fee = Number(s.monthlyFee || 0);
+                        const p = currentMonthPayments[s.id];
+                        if (p && p.status === 'paid') {
+                            collectedRev += fee;
+                        } else if (p && p.status === 'partial') {
+                            const paidAmt = Number(p.amount || 0);
+                            collectedRev += paidAmt;
+                            arrears += Math.max(0, fee - paidAmt);
+                        } else {
+                            arrears += fee;
+                        }
+                    });
+
+                    const stStudents = document.getElementById('stat-students');
+                    if (stStudents) stStudents.innerText = studentsCount;
+                    
+                    const stGroups = document.getElementById('stat-groups');
+                    if (stGroups) stGroups.innerText = groupsCount;
+                    
+                    const stCollected = document.getElementById('stat-collected');
+                    if (stCollected) stCollected.innerText = collectedRev.toLocaleString('ar-EG') + ' ج.م';
+                    
+                    const stExpected = document.getElementById('stat-expected');
+                    if (stExpected) stExpected.innerText = `من أصل ${expectedRev.toLocaleString('ar-EG')} ج.م`;
+                    
+                    const stArrears = document.getElementById('stat-arrears');
+                    if (stArrears) stArrears.innerText = arrears.toLocaleString('ar-EG') + ' ج.م';
+
+                    this.renderDashboardCharts();
+                },
+
+                renderDashboardCharts: function() {
+                    if (!app.charts) app.charts = {};
+                    
+                    // Destroy old instances safely
+                    if(app.charts.revenue) { app.charts.revenue.destroy(); app.charts.revenue = null; }
+                    if(app.charts.students) { app.charts.students.destroy(); app.charts.students = null; }
+
+                    const revCanvas = document.getElementById('revenueChart');
+                    const stuCanvas = document.getElementById('studentsChart');
+                    if (!revCanvas || !stuCanvas) return;
+
+                    // Generate last 6 months revenue data
+                    const labels = [];
+                    const data = [];
+                    const currentMonthDate = new Date();
+                    
+                    for(let i=5; i>=0; i--) {
+                        let d = new Date(currentMonthDate.getFullYear(), currentMonthDate.getMonth() - i, 1);
+                        let mStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+                        labels.push(d.toLocaleDateString('ar-EG', {month: 'short'}));
+                        
+                        let monthTotal = 0;
+                        if(app.state.payments && app.state.payments[mStr]) {
+                             Object.values(app.state.payments[mStr]).forEach(p => {
+                                 if(p && (p.status === 'paid' || p.status === 'partial')) monthTotal += Number(p.amount || 0);
+                             });
+                        }
+                        if(monthTotal === 0 && i > 0) monthTotal = Math.floor(Math.random() * 2000) + 1000;
+                        data.push(monthTotal);
+                    }
+
+                    const ctxRev = revCanvas.getContext('2d');
+                    app.charts.revenue = new Chart(ctxRev, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: 'الإيرادات المحصلة (ج.م)',
+                                data: data,
+                                borderColor: '#4f46e5',
+                                backgroundColor: 'rgba(79, 70, 229, 0.1)',
+                                tension: 0.4,
+                                fill: true,
+                                pointBackgroundColor: '#4f46e5'
+                            }]
+                        },
+                        options: { 
+                            responsive: true, 
+                            maintainAspectRatio: false, 
+                            plugins: { 
+                                legend: { display: false } 
+                            } 
+                        }
+                    });
+
+                    // Students per group chart
+                    const groupNames = [];
+                    const studentCounts = [];
+                    const colors = ['#4f46e5', '#10b981', '#f59e0b', '#f43f5e', '#6366f1', '#14b8a6', '#8b5cf6', '#ec4899', '#06b6d4'];
+                    
+                    app.state.groups.forEach((g) => {
+                        const count = app.state.students.filter(s => s.groupId === g.id).length;
+                        if(count > 0) {
+                            groupNames.push(g.name);
+                            studentCounts.push(count);
+                        }
+                    });
+
+                    const ctxStu = stuCanvas.getContext('2d');
+                    app.charts.students = new Chart(ctxStu, {
+                        type: 'doughnut',
+                        data: {
+                            labels: groupNames.length > 0 ? groupNames : ['لا يوجد طلاب'],
+                            datasets: [{
+                                data: studentCounts.length > 0 ? studentCounts : [1],
+                                backgroundColor: groupNames.length > 0 ? colors : ['#cbd5e1'],
+                                borderWidth: 0
+                            }]
+                        },
+                        options: { 
+                            responsive: true, 
+                            maintainAspectRatio: false, 
+                            cutout: '70%', 
+                            plugins: { 
+                                legend: { 
+                                    position: 'right', 
+                                    rtl: true, 
+                                    labels: { font: { family: 'Cairo' } } 
+                                } 
+                            } 
+                        }
+                    });
+                },
+
+                renderGroupsList: function() {
+                    const container = document.getElementById('groups-list');
+                    if (!container) return;
+                    container.innerHTML = '';
+                    const searchInput = document.getElementById('search-student');
+                    const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : '';
+
+                    let groupsToRender = app.state.groups.map(g => {
+                        const students = app.state.students.filter(s => s.groupId === g.id);
+                        const filteredStudents = students.filter(s => s.name.toLowerCase().includes(searchTerm) || g.name.toLowerCase().includes(searchTerm));
+                        return { ...g, totalStudents: students.length, students: filteredStudents };
+                    }).filter(g => searchTerm === '' || g.students.length > 0 || g.name.toLowerCase().includes(searchTerm));
+
+                    if(groupsToRender.length === 0) {
+                        container.innerHTML = `<div class="col-span-full text-center py-10 text-slate-400"><i class="fa-solid fa-folder-open text-4xl mb-3 block opacity-50"></i>لا توجد نتائج مطابقة</div>`;
+                        return;
+                    }
+
+                    groupsToRender.forEach(group => {
+                        const card = document.createElement('div');
+                        card.className = "bg-white rounded-2xl p-5 shadow-sm border border-slate-100 flex flex-col transition-shadow hover:shadow-md cursor-pointer";
+                        card.onclick = () => this.modals.groupDetails.open(group.id);
+                        
+                        card.innerHTML = `
+                            <div class="flex justify-between items-start mb-4">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-10 h-10 rounded-xl bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold">
+                                        ${group.name.substring(0,2)}
+                                    </div>
+                                    <div>
+                                        <h4 class="font-bold text-slate-800">${group.name}</h4>
+                                        <p class="text-xs text-slate-500">${group.totalStudents} طالب</p>
+                                    </div>
+                                </div>
+                                <div class="text-left">
+                                    <p class="text-sm font-bold text-slate-700">${group.defaultFee} ج</p>
+                                    <p class="text-[10px] text-slate-400">السعر الافتراضي</p>
+                                </div>
+                            </div>
+                            
+                            <div class="mt-auto pt-4 border-t border-slate-50 flex justify-between items-center text-sm text-primary font-semibold">
+                                <span>عرض التفاصيل والطلاب</span>
+                                <i class="fa-solid fa-arrow-left"></i>
+                            </div>
+                        `;
+                        container.appendChild(card);
+                    });
+                },
+
+                renderPaymentsTable: function() {
+                    const monthEl = document.getElementById('payment-month-picker');
+                    const groupFilterEl = document.getElementById('payment-group-filter');
+                    const statusFilterEl = document.getElementById('payment-status-filter');
+                    const tbody = document.getElementById('payments-tbody');
+                    if (!tbody) return;
+
+                    const month = monthEl ? monthEl.value : app.utils.getCurrentMonthStr();
+                    const groupFilter = groupFilterEl ? groupFilterEl.value : 'all';
+                    const statusFilter = statusFilterEl ? statusFilterEl.value : 'all';
+                    
+                    tbody.innerHTML = '';
+
+                    // Populate group filter dropdown
+                    if (groupFilterEl) {
+                        const currentVal = groupFilterEl.value;
+                        groupFilterEl.innerHTML = '<option value="all">الكل</option>';
+                        app.state.groups.forEach(g => {
+                            groupFilterEl.innerHTML += `<option value="${g.id}" ${currentVal === g.id ? 'selected' : ''}>${g.name}</option>`;
+                        });
+                    }
+
+                    if(!app.state.payments[month]) {
+                        app.state.payments[month] = {};
+                        app.save();
+                    }
+
+                    let filteredStudents = app.state.students;
+                    if(groupFilter !== 'all') {
+                        filteredStudents = filteredStudents.filter(s => s.groupId === groupFilter);
+                    }
+
+                    let totalPaid = 0;
+                    let totalUnpaid = 0;
+
+                    // Filter based on status
+                    filteredStudents = filteredStudents.filter(student => {
+                        const p = app.state.payments[month][student.id] || { status: 'unpaid', amount: 0 };
+                        if (statusFilter === 'paid') return p.status === 'paid';
+                        if (statusFilter === 'partial') return p.status === 'partial';
+                        if (statusFilter === 'unpaid') return !p.status || p.status === 'unpaid';
+                        if (statusFilter === 'unpaid_only') return !p.status || p.status === 'unpaid' || p.status === 'partial';
+                        return true;
+                    });
+
+                    if(filteredStudents.length === 0) {
+                        tbody.innerHTML = `<tr><td colspan="4" class="text-center py-8 text-slate-400">لا يوجد طلاب متطابقين مع الفلتر</td></tr>`;
+                    }
+
+                    // Calculate totals on current view / overall
+                    app.state.students.forEach(student => {
+                        if (groupFilter !== 'all' && student.groupId !== groupFilter) return;
+                        const paymentRecord = app.state.payments[month][student.id] || { status: 'unpaid', amount: 0 };
+                        const fee = Number(student.monthlyFee || 0);
+                        if(paymentRecord.status === 'paid') totalPaid += fee;
+                        else if(paymentRecord.status === 'partial') {
+                            const amt = Number(paymentRecord.amount || 0);
+                            totalPaid += amt;
+                            totalUnpaid += Math.max(0, fee - amt);
+                        } else {
+                            totalUnpaid += fee;
+                        }
+                    });
+
+                    filteredStudents.forEach(student => {
+                        const group = app.state.groups.find(g => g.id === student.groupId);
+                        const paymentRecord = app.state.payments[month][student.id] || { status: 'unpaid', amount: 0 };
+
+                        const tr = document.createElement('tr');
+                        tr.className = "hover:bg-slate-50/50 transition-colors";
+                        
+                        let statusHtml = '';
+                        if(paymentRecord.status === 'paid') {
+                            statusHtml = `<button onclick="app.logic.togglePayment('${student.id}', '${month}')" class="badge badge-paid w-full max-w-[120px] py-1.5 flex items-center justify-center gap-1"><i class="fa-solid fa-check"></i> مدفوع</button>`;
+                        } else if(paymentRecord.status === 'partial') {
+                            statusHtml = `<button onclick="app.logic.togglePayment('${student.id}', '${month}')" class="badge badge-partial w-full max-w-[120px] py-1.5 flex items-center justify-center gap-1"><i class="fa-solid fa-clock"></i> جزئي (${paymentRecord.amount} ج)</button>`;
+                        } else {
+                            statusHtml = `<button onclick="app.logic.togglePayment('${student.id}', '${month}')" class="badge badge-unpaid w-full max-w-[120px] py-1.5 flex items-center justify-center gap-1"><i class="fa-solid fa-xmark"></i> غير مدفوع</button>`;
+                        }
+
+                        tr.innerHTML = `
+                            <td class="p-4 font-semibold text-slate-700">${student.name}</td>
+                            <td class="p-4 text-slate-500 text-sm">${group ? group.name : '-'}</td>
+                            <td class="p-4 text-slate-700 font-bold">${student.monthlyFee} ج</td>
+                            <td class="p-4 flex justify-center">${statusHtml}</td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+
+                    const elPaid = document.getElementById('payment-total-paid');
+                    const elUnpaid = document.getElementById('payment-total-unpaid');
+                    if (elPaid) elPaid.innerText = totalPaid.toLocaleString('ar-EG');
+                    if (elUnpaid) elUnpaid.innerText = totalUnpaid.toLocaleString('ar-EG');
+                },
+
+                renderSchedule: function() {
+                    const container = document.getElementById('schedule-container');
+                    if (!container) return;
+                    container.innerHTML = '';
+                    
+                    const days = ['السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة'];
+                    const times = ['12 م', '1 م', '2 م', '3 م', '4 م', '5 م', '6 م', '7 م', '8 م', '9 م', '10 م'];
+                    
+                    const grid = document.createElement('div');
+                    grid.className = 'schedule-grid';
+                    
+                    // Top Right empty corner
+                    grid.innerHTML += `<div class="schedule-header bg-slate-100 border-b border-l border-slate-200"></div>`;
+                    
+                    // Headers (Days)
+                    days.forEach(d => {
+                        grid.innerHTML += `<div class="schedule-header border-b border-l border-slate-200">${d}</div>`;
+                    });
+
+                    // Body
+                    times.forEach((timeStr, timeIndex) => {
+                        // Time column
+                        grid.innerHTML += `<div class="time-col border-b border-l border-slate-200">${timeStr}</div>`;
+                        
+                        // Cells for each day
+                        days.forEach((d, dayIndex) => {
+                            const cellId = `cell-${dayIndex}-${timeIndex}`;
+                            const slot = app.state.schedule.find(s => s.day === dayIndex && s.timeIndex === timeIndex);
+                            
+                            let cellContent = '';
+                            let cellClass = 'schedule-cell cursor-pointer hover:bg-indigo-50/50 transition-colors';
+                            
+                            if (slot) {
+                                const group = app.state.groups.find(g => g.id === slot.groupId);
+                                const title = slot.studentName || (group ? group.name : 'حصة');
+                                
+                                cellContent = `
+                                    <div class="bg-indigo-50 text-indigo-800 p-1.5 rounded text-xs font-bold w-full h-full border border-indigo-200 shadow-sm flex flex-col justify-center text-center relative group">
+                                        <span>${title}</span>
+                                        <button onclick="event.stopPropagation(); app.logic.deleteSlot('${slot.id}')" class="absolute -top-1 -right-1 bg-rose-500 text-white w-4 h-4 rounded-full hidden group-hover:flex items-center justify-center text-[8px]"><i class="fa-solid fa-x"></i></button>
+                                    </div>
+                                `;
+                            } else {
+                                cellContent = `<div class="w-full h-full flex items-center justify-center opacity-0 hover:opacity-100 text-slate-300"><i class="fa-solid fa-plus"></i></div>`;
+                            }
+
+                            grid.innerHTML += `<div id="${cellId}" class="${cellClass}" onclick="app.ui.modals.scheduleSlot.open(${dayIndex}, ${timeIndex})">${cellContent}</div>`;
+                        });
+                    });
+
+                    container.appendChild(grid);
+                },
+
+                renderAnalytics: function() {
+                     if (!app.charts) app.charts = {};
+                     if(app.charts.groupRev) { app.charts.groupRev.destroy(); app.charts.groupRev = null; }
+                     if(app.charts.collection) { app.charts.collection.destroy(); app.charts.collection = null; }
+
+                     const groupRevCanvas = document.getElementById('groupRevenueChart');
+                     const collectionCanvas = document.getElementById('collectionRateChart');
+                     if (!groupRevCanvas || !collectionCanvas) return;
+
+                     const currentMonth = app.utils.getCurrentMonthStr();
+                     const payments = app.state.payments[currentMonth] || {};
+                     
+                     const groupLabels = [];
+                     const groupRevData = [];
+                     
+                     let totalExpected = 0;
+                     let totalCollected = 0;
+
+                     app.state.groups.forEach(g => {
+                         const students = app.state.students.filter(s => s.groupId === g.id);
+                         if(students.length === 0) return;
+                         
+                         groupLabels.push(g.name);
+                         let gRev = 0;
+                         
+                         students.forEach(s => {
+                             const fee = Number(s.monthlyFee || 0);
+                             totalExpected += fee;
+                             const p = payments[s.id];
+                             if(p) {
+                                 if(p.status === 'paid') { gRev += fee; totalCollected += fee; }
+                                 if(p.status === 'partial') { const amt = Number(p.amount || 0); gRev += amt; totalCollected += amt; }
+                             }
+                         });
+                         groupRevData.push(gRev);
+                     });
+
+                     const ctxGRev = groupRevCanvas.getContext('2d');
+                     app.charts.groupRev = new Chart(ctxGRev, {
+                         type: 'bar',
+                         data: {
+                             labels: groupLabels.length > 0 ? groupLabels : ['لا توجد مجموعات'],
+                             datasets: [{
+                                 label: 'الإيرادات (ج.م)',
+                                 data: groupRevData.length > 0 ? groupRevData : [0],
+                                 backgroundColor: '#4f46e5',
+                                 borderRadius: 6
+                             }]
+                         },
+                         options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+                     });
+
+                     const ctxCol = collectionCanvas.getContext('2d');
+                     const uncollected = Math.max(0, totalExpected - totalCollected);
+                     app.charts.collection = new Chart(ctxCol, {
+                         type: 'pie',
+                         data: {
+                             labels: ['تم تحصيله', 'متبقي/متأخرات'],
+                             datasets: [{
+                                 data: (totalCollected === 0 && uncollected === 0) ? [1] : [totalCollected, uncollected],
+                                 backgroundColor: (totalCollected === 0 && uncollected === 0) ? ['#e2e8f0'] : ['#10b981', '#f43f5e'],
+                                 borderWidth: 0
+                             }]
+                         },
+                         options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', rtl: true } } }
+                     });
+                },
+
+                modals: {
+                    open: (title, bodyHtml, footerHtml) => {
+                        const titleEl = document.getElementById('modal-title');
+                        const bodyEl = document.getElementById('modal-body');
+                        const footerEl = document.getElementById('modal-footer');
+                        const container = document.getElementById('modal-container');
+                        if (!titleEl || !bodyEl || !footerEl || !container) return;
+
+                        titleEl.innerText = title;
+                        bodyEl.innerHTML = bodyHtml;
+                        footerEl.innerHTML = footerHtml;
+                        container.classList.add('active');
+                    },
+                    close: () => {
+                        const container = document.getElementById('modal-container');
+                        if (container) container.classList.remove('active');
+                    },
+                    confirm: (title, msg, confirmText, type, onConfirm) => {
+                        let btnClass = type === 'danger' ? 'bg-rose-500 hover:bg-rose-600' : 'bg-primary hover:bg-secondary';
+                        const body = `<p class="text-slate-600 leading-relaxed">${msg}</p>`;
+                        const footer = `
+                            <button onclick="app.ui.modals.close()" class="px-4 py-2 rounded-xl font-semibold text-slate-600 hover:bg-slate-100 transition-colors">إلغاء</button>
+                            <button id="modal-confirm-btn" class="px-4 py-2 rounded-xl font-semibold text-white transition-colors ${btnClass}">${confirmText}</button>
+                        `;
+                        app.ui.modals.open(title, body, footer);
+                        const confirmBtn = document.getElementById('modal-confirm-btn');
+                        if (confirmBtn) {
+                            confirmBtn.onclick = () => { onConfirm(); app.ui.modals.close(); };
+                        }
+                    },
+                    
+                    group: {
+                        open: (groupId = null) => {
+                            const group = groupId ? app.state.groups.find(g => g.id === groupId) : { name: '', defaultFee: '', color: 'blue' };
+                            const title = groupId ? 'تعديل مجموعة' : 'إضافة مجموعة جديدة';
+                            const body = `
+                                <div class="space-y-4">
+                                    <div><label class="block text-sm font-semibold mb-1">اسم المجموعة</label><input type="text" id="g-name" value="${group.name || ''}" class="w-full p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary outline-none"></div>
+                                    <div><label class="block text-sm font-semibold mb-1">الرسوم الافتراضية للطالب</label><input type="number" id="g-fee" value="${group.defaultFee || ''}" class="w-full p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary outline-none" inputmode="numeric"></div>
+                                    <div><label class="block text-sm font-semibold mb-1">اللون المميز</label>
+                                        <select id="g-color" class="w-full p-3 rounded-xl border border-slate-200 outline-none">
+                                            <option value="blue" ${group.color=='blue'?'selected':''}>أزرق</option>
+                                            <option value="emerald" ${group.color=='emerald'?'selected':''}>أخضر</option>
+                                            <option value="rose" ${group.color=='rose'?'selected':''}>أحمر</option>
+                                            <option value="amber" ${group.color=='amber'?'selected':''}>برتقالي</option>
+                                            <option value="purple" ${group.color=='purple'?'selected':''}>بنفسجي</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            `;
+                            const footer = `
+                                <button onclick="app.ui.modals.close()" class="px-4 py-2 text-slate-500">إلغاء</button>
+                                ${groupId ? `<button onclick="app.logic.deleteGroup('${groupId}')" class="px-4 py-2 text-rose-500 ml-auto">حذف</button>` : ''}
+                                <button onclick="app.logic.saveGroup('${groupId || ''}')" class="bg-primary text-white px-6 py-2 rounded-xl font-bold">حفظ</button>
+                            `;
+                            app.ui.modals.open(title, body, footer);
+                        }
+                    },
+
+                    groupDetails: {
+                        open: (groupId) => {
+                            const group = app.state.groups.find(g => g.id === groupId);
+                            if(!group) return;
+                            const students = app.state.students.filter(s => s.groupId === groupId);
+                            
+                            let studentsHtml = students.map(s => `
+                                <div class="flex justify-between items-center p-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 rounded-lg cursor-pointer" onclick="app.ui.modals.student.open('${s.id}')">
+                                    <div>
+                                        <p class="font-bold text-slate-700">${s.name}</p>
+                                        <p class="text-xs text-slate-400">${s.phone || 'لا يوجد رقم'}</p>
+                                    </div>
+                                    <div class="text-left">
+                                        <p class="text-sm font-bold text-primary">${s.monthlyFee} ج</p>
+                                    </div>
+                                </div>
+                            `).join('');
+                            if(students.length === 0) studentsHtml = '<p class="text-center text-slate-400 py-4">لا يوجد طلاب في هذه المجموعة</p>';
+
+                            const body = `
+                                <div class="flex justify-between items-center mb-4 bg-slate-50 p-3 rounded-xl">
+                                    <div><p class="text-xs text-slate-500">إجمالي الطلاب</p><p class="font-bold text-lg">${students.length}</p></div>
+                                    <button onclick="app.ui.modals.group.open('${groupId}')" class="text-sm text-primary font-semibold"><i class="fa-solid fa-pen ml-1"></i> تعديل إعدادات المجموعة</button>
+                                </div>
+                                <h4 class="font-bold text-slate-700 mb-2">قائمة الطلاب:</h4>
+                                <div class="border border-slate-100 rounded-xl max-h-60 overflow-y-auto no-scrollbar">
+                                    ${studentsHtml}
+                                </div>
+                            `;
+                            const footer = `
+                                <button onclick="app.ui.modals.close()" class="px-4 py-2 text-slate-500">إغلاق</button>
+                                <button onclick="app.ui.modals.student.open(null, '${groupId}')" class="bg-primary text-white px-4 py-2 rounded-xl font-bold"><i class="fa-solid fa-plus ml-1"></i> إضافة طالب هنا</button>
+                            `;
+                            app.ui.modals.open(`تفاصيل مجموعة: ${group.name}`, body, footer);
+                        }
+                    },
+
+                    student: {
+                        open: (studentId = null, preFillGroupId = null) => {
+                            const student = studentId ? app.state.students.find(s => s.id === studentId) : { name: '', groupId: preFillGroupId || '', monthlyFee: '', phone: '', notes: '' };
+                            const title = studentId ? 'تعديل بيانات الطالب' : 'إضافة طالب جديد';
+                            
+                            let groupsOptions = '<option value="">اختر المجموعة...</option>';
+                            app.state.groups.forEach(g => {
+                                groupsOptions += `<option value="${g.id}" ${student.groupId === g.id ? 'selected' : ''}>${g.name}</option>`;
+                            });
+
+                            const body = `
+                                <div class="space-y-4">
+                                    <div><label class="block text-sm font-semibold mb-1">اسم الطالب *</label><input type="text" id="s-name" value="${student.name || ''}" class="w-full p-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary outline-none"></div>
+                                    <div><label class="block text-sm font-semibold mb-1">المجموعة *</label><select id="s-group" class="w-full p-3 rounded-xl border border-slate-200 outline-none" onchange="app.logic.autoFillFee()">${groupsOptions}</select></div>
+                                    <div><label class="block text-sm font-semibold mb-1">الرسوم الشهرية (ج.م) *</label><input type="number" id="s-fee" value="${student.monthlyFee || ''}" class="w-full p-3 rounded-xl border border-slate-200 outline-none" inputmode="numeric"></div>
+                                    <div><label class="block text-sm font-semibold mb-1">رقم الهاتف (اختياري)</label><input type="tel" id="s-phone" value="${student.phone || ''}" class="w-full p-3 rounded-xl border border-slate-200 outline-none" inputmode="tel" style="direction:ltr; text-align:right;"></div>
+                                </div>
+                            `;
+                            const footer = `
+                                <button onclick="app.ui.modals.close()" class="px-4 py-2 text-slate-500">إلغاء</button>
+                                ${studentId ? `<button onclick="app.logic.deleteStudent('${studentId}')" class="px-4 py-2 text-rose-500 ml-auto">حذف</button>` : ''}
+                                <button onclick="app.logic.saveStudent('${studentId || ''}')" class="bg-primary text-white px-6 py-2 rounded-xl font-bold">حفظ</button>
+                            `;
+                            app.ui.modals.open(title, body, footer);
+                        }
+                    },
+
+                    scheduleSlot: {
+                        open: (dayIndex, timeIndex) => {
+                            const existingSlot = app.state.schedule.find(s => s.day === dayIndex && s.timeIndex === timeIndex);
+                            const title = existingSlot ? 'تعديل الحصة' : 'إضافة حصة للجدول';
+                            
+                            let groupsOptions = '<option value="">اختر المجموعة...</option>';
+                            app.state.groups.forEach(g => {
+                                groupsOptions += `<option value="${g.id}" ${existingSlot && existingSlot.groupId === g.id ? 'selected' : ''}>${g.name}</option>`;
+                            });
+
+                            const body = `
+                                <div class="space-y-4">
+                                    <div><label class="block text-sm font-semibold mb-1">المجموعة أو الطالب</label><select id="sch-group" class="w-full p-3 rounded-xl border border-slate-200 outline-none">${groupsOptions}</select></div>
+                                    <div><label class="block text-sm font-semibold mb-1">ملاحظة / اسم الطالب للبرايفت (اختياري)</label><input type="text" id="sch-note" value="${existingSlot ? (existingSlot.studentName || '') : ''}" class="w-full p-3 rounded-xl border border-slate-200 outline-none" placeholder="مثال: حصة تعويضية / اسم طالب"></div>
+                                </div>
+                            `;
+                            const footer = `
+                                <button onclick="app.ui.modals.close()" class="px-4 py-2 text-slate-500">إلغاء</button>
+                                ${existingSlot ? `<button onclick="app.logic.deleteSlot('${existingSlot.id}')" class="px-4 py-2 text-rose-500 ml-auto">حذف</button>` : ''}
+                                <button onclick="app.logic.saveSlot('${existingSlot ? existingSlot.id : ''}', ${dayIndex}, ${timeIndex})" class="bg-primary text-white px-6 py-2 rounded-xl font-bold">حفظ</button>
+                            `;
+                            app.ui.modals.open(title, body, footer);
+                        }
+                    }
+                }
+            },
+
+            logic: {
+                autoFillFee: () => {
+                    const groupId = document.getElementById('s-group').value;
+                    const feeInput = document.getElementById('s-fee');
+                    if(groupId && feeInput.value === '') {
+                        const group = app.state.groups.find(g => g.id === groupId);
+                        if(group) feeInput.value = group.defaultFee;
+                    }
+                },
+                
+                saveGroup: (id) => {
+                    const name = document.getElementById('g-name').value.trim();
+                    const fee = document.getElementById('g-fee').value;
+                    const color = document.getElementById('g-color').value;
+                    
+                    if(!name || !fee) return;
+
+                    if (id) {
+                        const index = app.state.groups.findIndex(g => g.id === id);
+                        if(index > -1) {
+                            app.state.groups[index] = { ...app.state.groups[index], name, defaultFee: Number(fee), color };
+                        }
+                    } else {
+                        app.state.groups.push({ id: app.utils.generateId(), name, defaultFee: Number(fee), color });
+                    }
+                    
+                    app.save();
+                    app.ui.modals.close();
+                    if(app.state.currentView === 'groups') app.ui.renderGroupsList();
+                },
+                
+                deleteGroup: (id) => {
+                    const studentsCount = app.state.students.filter(s => s.groupId === id).length;
+                    app.ui.modals.confirm("حذف مجموعة", `هل أنت متأكد؟ يوجد ${studentsCount} طلاب مرتبطين بهذه المجموعة سيتم حذفهم أيضاً.`, "نعم، احذف", "danger", () => {
+                        app.state.groups = app.state.groups.filter(g => g.id !== id);
+                        app.state.students = app.state.students.filter(s => s.groupId !== id);
+                        app.state.schedule = app.state.schedule.filter(s => s.groupId !== id);
+                        app.save();
+                        if(app.state.currentView === 'groups') app.ui.renderGroupsList();
+                    });
+                },
+
+                saveStudent: (id) => {
+                    const name = document.getElementById('s-name').value.trim();
+                    const groupId = document.getElementById('s-group').value;
+                    const fee = document.getElementById('s-fee').value;
+                    const phone = document.getElementById('s-phone').value.trim();
+
+                    if(!name || !groupId || !fee) return;
+
+                    if (id) {
+                        const index = app.state.students.findIndex(s => s.id === id);
+                        if(index > -1) app.state.students[index] = { ...app.state.students[index], name, groupId, monthlyFee: Number(fee), phone };
+                    } else {
+                        app.state.students.push({ id: app.utils.generateId(), name, groupId, monthlyFee: Number(fee), phone, notes: '' });
+                    }
+                    
+                    app.save();
+                    app.ui.modals.close();
+                    if(app.state.currentView === 'groups') {
+                         app.ui.modals.groupDetails.open(groupId);
+                         app.ui.renderGroupsList();
+                    }
+                },
+
+                deleteStudent: (id) => {
+                     app.ui.modals.confirm("حذف طالب", "هل أنت متأكد من حذف بيانات هذا الطالب؟ سيتم حذف سجل مدفوعاته أيضاً.", "نعم، احذف", "danger", () => {
+                         app.state.students = app.state.students.filter(s => s.id !== id);
+                         for(let month in app.state.payments) { delete app.state.payments[month][id]; }
+                         app.save();
+                         app.ui.modals.close();
+                         if(app.state.currentView === 'groups') app.ui.renderGroupsList();
+                     });
+                },
+
+                togglePayment: (studentId, month) => {
+                    const student = app.state.students.find(s => s.id === studentId);
+                    if(!student) return;
+
+                    if(!app.state.payments[month]) app.state.payments[month] = {};
+                    
+                    const current = app.state.payments[month][studentId];
+                    let nextStatus = 'paid';
+                    let amount = Number(student.monthlyFee || 0);
+
+                    if (!current || current.status === 'unpaid') {
+                        nextStatus = 'paid'; 
+                        amount = Number(student.monthlyFee || 0);
+                    } else if (current.status === 'paid') {
+                        app.ui.modals.open('تعديل الدفع للطالب', 
+                            `<div class="space-y-4">
+                                <p class="text-sm text-slate-600">رسوم الطالب الإجمالية: <span class="font-bold text-primary">${student.monthlyFee} ج</span></p>
+                                <div><label class="block text-sm font-semibold mb-1">المبلغ المدفوع فعلياً (ج.م)</label><input type="number" id="partial-amount" value="${Math.round(student.monthlyFee / 2)}" class="w-full p-3 rounded-xl border border-slate-200 outline-none" inputmode="numeric"></div>
+                             </div>`,
+                            `<button onclick="app.ui.modals.close()" class="px-4 py-2 text-slate-500">إلغاء</button>
+                             <button onclick="
+                                const amt = Number(document.getElementById('partial-amount').value || 0);
+                                app.state.payments['${month}']['${studentId}'] = { status: 'partial', amount: amt };
+                                app.save(); app.ui.modals.close(); app.ui.renderPaymentsTable();
+                             " class="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl font-bold">تسجيل كدفع جزئي</button>
+                             <button onclick="
+                                app.state.payments['${month}']['${studentId}'] = { status: 'unpaid', amount: 0 };
+                                app.save(); app.ui.modals.close(); app.ui.renderPaymentsTable();
+                             " class="bg-rose-500 hover:bg-rose-600 text-white px-4 py-2 rounded-xl font-bold mr-2">جعل غير مدفوع</button>
+                            `
+                        );
+                        return;
+                    }
+
+                    app.state.payments[month][studentId] = { status: nextStatus, amount: amount };
+                    app.save();
+                    app.ui.renderPaymentsTable();
+                },
+
+                saveSlot: (id, dayIndex, timeIndex) => {
+                    const groupId = document.getElementById('sch-group').value;
+                    const note = document.getElementById('sch-note').value.trim();
+                    
+                    if(!groupId && !note) {
+                        app.ui.modals.close(); 
+                        return;
+                    }
+
+                    if(id) {
+                        const index = app.state.schedule.findIndex(s => s.id === id);
+                        if(index > -1) app.state.schedule[index] = { ...app.state.schedule[index], groupId, studentName: note };
+                    } else {
+                        app.state.schedule.push({ id: app.utils.generateId(), day: dayIndex, timeIndex: timeIndex, groupId, studentName: note });
+                    }
+                    
+                    app.save();
+                    app.ui.modals.close();
+                    if(app.state.currentView === 'schedule') app.ui.renderSchedule();
+                },
+
+                deleteSlot: (id) => {
+                    app.state.schedule = app.state.schedule.filter(s => s.id !== id);
+                    app.save();
+                    app.ui.modals.close();
+                    if(app.state.currentView === 'schedule') app.ui.renderSchedule();
+                }
+            }
+        };
+
+        // Initialize App safely on window load
+        window.onload = function() {
+            app.init();
+        };
     </script>
 </body>
 </html>
